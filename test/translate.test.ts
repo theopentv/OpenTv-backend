@@ -61,7 +61,7 @@ describe('detectSourceLang', () => {
 describe('isTranslateTarget', () => {
   it('accepts only the languages the app ships', () => {
     expect(isTranslateTarget('ar')).toBe(true);
-    expect(isTranslateTarget('de')).toBe(false);
+    expect(isTranslateTarget('nl')).toBe(false);
     expect(isTranslateTarget(7)).toBe(false);
   });
 });
@@ -105,7 +105,7 @@ describe('POST /v1/comments/:id/translate', () => {
   it('refuses a language the app does not ship', async () => {
     const { env } = seed();
     const token = await tokenFor(env, 'p_reader');
-    const res = await call(env, 'POST', '/v1/comments/c_one/translate', { token, body: { lang: 'de' } });
+    const res = await call(env, 'POST', '/v1/comments/c_one/translate', { token, body: { lang: 'nl' } });
     expect(res.status).toBe(400);
   });
 

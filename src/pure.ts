@@ -1525,11 +1525,11 @@ export function listId(ownerId: string, name: string): string {
 /**
  * The languages a comment may be translated INTO.
  *
- * Exactly the six the app ships, and deliberately not "whatever the model
+ * Exactly the languages the app ships (nine since 2.0.0: de, tr, pl added), and deliberately not "whatever the model
  * supports". A translation is stored for ever under this key, so an open list
  * would let one client fill the table with languages no reader has.
  */
-export const TRANSLATE_TARGETS = ['en', 'ar', 'fr', 'it', 'es', 'pt'] as const;
+export const TRANSLATE_TARGETS = ['en', 'ar', 'fr', 'it', 'es', 'pt', 'de', 'tr', 'pl'] as const;
 export type TranslateTarget = (typeof TRANSLATE_TARGETS)[number];
 
 export function isTranslateTarget(v: unknown): v is TranslateTarget {
