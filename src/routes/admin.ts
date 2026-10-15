@@ -1262,7 +1262,7 @@ admin.get('/admin/image/:id', async (c) => {
 // ── GET /v1/admin/trends?days=14|30|90 ───────────────────────────────────────
 
 /*
- * FIVE LINES OVER TIME, and the period before each, so a number can be read as
+ * NINE LINES OVER TIME, and the period before each, so a number can be read as
  * better or worse rather than only as big or small. Counts per UTC day, never
  * who: joins (robots left out, as on the cards), members who opened the app
  * (profile_days — kept 90 days, so the period before a 90-day view is partly
@@ -1282,7 +1282,7 @@ admin.get('/admin/trends', async (c) => {
   // counts, never who.
   type Row = { day: string; n: number; p?: number; apple?: number; google?: number };
   const db = c.env.DB;
-  const [joins, opened, comments, ratings, deletes] = await Promise.all([
+  const [joins, opened, comments, ratings, deletes, plus, returned, syncs, backups] = await Promise.all([
     db.prepare(
       `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n,
               SUM(EXISTS (SELECT 1 FROM identities i WHERE i.profile_id = pr.id AND i.provider = 'apple')) AS apple,
@@ -1308,7 +1308,45 @@ admin.get('/admin/trends', async (c) => {
         WHERE deleted_at IS NOT NULL AND deleted_at >= ? AND NOT ${robotSql('pr')}
         GROUP BY day`,
     ).bind(since).all<Row>(),
+    // First store purchase of Plus (rc.ts sets plus_since once). Gifts set
+    // plus_until instead, so they are not counted here.
+    db.prepare(
+      `SELECT substr(plus_since, 1, 10) AS day, COUNT(*) AS n FROM profiles pr
+        WHERE plus_since IS NOT NULL AND plus_since >= ? AND NOT ${robotSql('pr')}
+        GROUP BY day`,
+    ).bind(since).all<Row>(),
+    // Of the people who joined on a day, how many opened the app the next day
+    // (d1) and within the next seven (d7), from profile_days. Counts only.
+    db.prepare(
+      `SELECT substr(pr.created_at, 1, 10) AS day, COUNT(*) AS joined,
+              SUM(EXISTS (SELECT 1 FROM profile_days d WHERE d.profile_id = pr.id
+                            AND d.day = date(substr(pr.created_at, 1, 10), '+1 day'))) AS d1,
+              SUM(EXISTS (SELECT 1 FROM profile_days d WHERE d.profile_id = pr.id
+                            AND d.day > substr(pr.created_at, 1, 10)
+                            AND d.day <= date(substr(pr.created_at, 1, 10), '+7 day'))) AS d7
+         FROM profiles pr
+        WHERE deleted_at IS NULL AND created_at >= ? AND NOT ${robotSql('pr')}
+        GROUP BY day`,
+    ).bind(since).all<{ day: string; joined: number; d1: number; d7: number }>(),
+    db.prepare(
+      `SELECT substr(created_at, 1, 10) AS day, COUNT(DISTINCT profile_id) AS n FROM sync_ops
+        WHERE created_at >= ? GROUP BY day`,
+    ).bind(since).all<Row>(),
+    db.prepare('SELECT day, COUNT(*) AS n FROM backup_days WHERE day >= ? GROUP BY day').bind(since).all<Row>(),
   ]);
+  // A day's next-day return is only known once that next day is over, so the
+  // last two days are left out rather than drawn as zero.
+  const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+  const returnedRows = (returned.results ?? [])
+    .filter((r) => r.day < yesterday && r.joined > 0)
+    .map((r) => ({ day: r.day, n: Math.round((100 * r.d1) / r.joined), joined: r.joined, d1: r.d1, d7: r.d7 }));
+  // Plus in use: people who backed up and people whose phones synced, one bar.
+  const usage = new Map<string, { day: string; n: number; b: number; s: number }>();
+  for (const r of backups.results ?? []) usage.set(r.day, { day: r.day, n: r.n, b: r.n, s: 0 });
+  for (const r of syncs.results ?? []) {
+    const u = usage.get(r.day) ?? { day: r.day, n: 0, b: 0, s: 0 };
+    u.s = r.n; u.n = u.b + u.s; usage.set(r.day, u);
+  }
   const first = await db.prepare('SELECT MIN(day) AS d FROM profile_days').first<{ d: string | null }>();
   return c.json(
     {
@@ -1321,6 +1359,10 @@ admin.get('/admin/trends', async (c) => {
         comments: comments.results ?? [],
         ratings: ratings.results ?? [],
         deletes: deletes.results ?? [],
+        plus: plus.results ?? [],
+        returned: returnedRows,
+        method: joins.results ?? [],
+        usage: [...usage.values()],
       },
     },
     200,

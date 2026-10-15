@@ -232,9 +232,12 @@ backup.post('/backup', requireAuth, async (c) => {
 
   const updatedAt = new Date().toISOString();
   // For the dashboard's Backup column: when, and how big. Never what.
-  await c.env.DB.prepare('UPDATE profiles SET backup_at = ?, backup_bytes = ? WHERE id = ?')
-    .bind(updatedAt, body.byteLength, profileId)
-    .run();
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE profiles SET backup_at = ?, backup_bytes = ? WHERE id = ?').bind(updatedAt, body.byteLength, profileId),
+    // the dashboard's daily count (migration 0060); kept 90 days like profile_days
+    c.env.DB.prepare('INSERT OR IGNORE INTO backup_days (profile_id, day) VALUES (?, ?)').bind(profileId, updatedAt.slice(0, 10)),
+    c.env.DB.prepare("DELETE FROM backup_days WHERE profile_id = ? AND day < date('now', '-90 days')").bind(profileId),
+  ]);
   return c.json({ ok: true, size: body.byteLength, updatedAt, device });
 });
 

@@ -740,7 +740,22 @@ const TRENDS = [
   ['comments', 'Comments written in the app', 'total'],
   ['ratings', 'Ratings given in the app', 'total'],
   ['deletes', 'Accounts deleted', 'total'],
+  ['plus', 'New Plus subscribers (store)', 'total'],
+  ['returned', 'New members back the next day (%)', 'pct'],
+  ['method', 'How new members signed up', 'stack'],
+  ['usage', 'Plus in use: backups and syncing', 'stack'],
 ];
+// Stacked charts: each part of the bar, its row field, its colour. Email is
+// what is left of a day's joins after Apple and Google.
+const STACKS = {
+  method: [['apple', 'Apple', '#e9e9ee'], ['google', 'Google', '#4c8bf5'], ['email', 'Email', '#ffd400']],
+  usage: [['b', 'backed up', '#78be3d'], ['s', 'synced', '#ffd400']],
+};
+function partOf(key, row, field) {
+  if (!row) return 0;
+  if (key === 'method' && field === 'email') return Math.max(0, row.n - (row.apple || 0) - (row.google || 0));
+  return row[field] || 0;
+}
 function dayList(end, n) {
   const out = [];
   const t = Date.parse(end + 'T00:00:00Z');
@@ -764,6 +779,8 @@ function drawTrend(key, title, kind, d) {
   const rows = d.series[key] || [];
   const map = {};
   rows.forEach((r) => { map[r.day] = r.n; });
+  const rowOf0 = {};
+  rows.forEach((r) => { rowOf0[r.day] = r; });
   const cur = dayList(d.today, d.days);
   const prev = dayList(new Date(Date.parse(cur[0] + 'T00:00:00Z') - 86400000).toISOString().slice(0, 10), d.days);
   const vals = cur.map((day) => map[day] || 0);
@@ -781,22 +798,39 @@ function drawTrend(key, title, kind, d) {
   const best = vals.indexOf(Math.max(...vals));
   const showAll = d.days <= 30;
   const every = d.days <= 14 ? 1 : d.days <= 30 ? 3 : 10;
-  const big = kind === 'avg' ? (Math.round(avg * 10) / 10).toLocaleString() : total.toLocaleString();
-  const lbl = kind === 'avg' ? 'a day on average' : 'in ' + d.days + ' days · ' + (Math.round(avg * 10) / 10) + ' a day';
+  // pct: the days themselves are already rates, so the summary is a weighted
+  // rate over the period (people back / people joined), not a sum.
+  let pctNow = null, pctBefore = null;
+  if (kind === 'pct') {
+    const sum = (days) => days.reduce((a, day) => { const r = rowOf0[day]; if (r) { a[0] += r.d1; a[1] += r.joined; } return a; }, [0, 0]);
+    const [b1, j1] = sum(cur); const [b0, j0] = sum(prev);
+    pctNow = j1 ? Math.round((100 * b1) / j1) : 0; pctBefore = j0 ? Math.round((100 * b0) / j0) : null;
+  }
+  const big = kind === 'pct' ? pctNow + '%' : kind === 'avg' ? (Math.round(avg * 10) / 10).toLocaleString() : total.toLocaleString();
+  const lbl = kind === 'pct' ? 'came back the next day' : kind === 'avg' ? 'a day on average' : 'in ' + d.days + ' days · ' + (Math.round(avg * 10) / 10) + ' a day';
   const worse = key === 'deletes';
-  const change = kind === 'avg' ? changeHtml(avg, beforeAvg, worse) : changeHtml(total - vals[vals.length - 1], before == null ? null : before - (map[prev[prev.length - 1]] || 0), worse);
+  const change = kind === 'pct' ? (pctBefore == null ? '<span class="flat">no earlier data</span>' : changeHtml(pctNow, pctBefore, false)) : kind === 'avg' ? changeHtml(avg, beforeAvg, worse) : changeHtml(total - vals[vals.length - 1], before == null ? null : before - (map[prev[prev.length - 1]] || 0), worse);
   const rowOf = {};
   rows.forEach((r) => { rowOf[r.day] = r; });
   const bars = vals.map((n, i) => {
     const cls = 'tbar' + (n ? '' : ' zero') + (i === vals.length - 1 ? ' today' : '');
-    const label = n && (showAll || i === best || i === vals.length - 1) ? '<b>' + n + '</b>' : '';
-    return '<div class="' + cls + '" data-tip="' + tipFor(key, cur[i], n, rowOf[cur[i]], avg, i === vals.length - 1).replace(/"/g, '&quot;') + '">' + label +
-      '<i style="height:' + Math.max(1, Math.round((n / max) * 86)) + '%"></i></div>';
+    const label = n && (showAll || i === best || i === vals.length - 1) ? '<b>' + n + (kind === 'pct' ? '%' : '') + '</b>' : '';
+    const tip = tipFor(key, cur[i], n, rowOf[cur[i]], avg, i === vals.length - 1).replace(/"/g, '&quot;');
+    const segs = STACKS[key] && n
+      ? STACKS[key].slice().reverse().map(([f, , col]) => {
+          const v = partOf(key, rowOf[cur[i]], f);
+          return v ? '<i style="height:' + Math.max(1, Math.round((v / max) * 86)) + '%;background:' + col + ';border-radius:0"></i>' : '';
+        }).join('')
+      : '<i style="height:' + Math.max(1, Math.round((n / max) * 86)) + '%"></i>';
+    return '<div class="' + cls + '" data-tip="' + tip + '">' + label + segs + '</div>';
   }).join('');
   const avgLine = avg > 0 ? '<div class="tavg" style="bottom:' + Math.round((avg / max) * 86) + '%" title="average ' + (Math.round(avg * 10) / 10) + '"></div>' : '';
   const labs = cur.map((day, i) => '<span>' + ((i % every === 0 || i === cur.length - 1) ? shortDay(day) : '') + '</span>').join('');
   const foot = (total ? 'Best day: ' + shortDay(cur[best]) + ' (' + vals[best] + ')' : 'Nothing yet in this period') + (key === 'opened' && d.openedSince ? ' · counted since ' + d.openedSince : '') + (key === 'deletes' && d.days > 30 ? ' · deleted accounts are purged after 30 days, so older days read empty' : '');
-  return '<div class="trend"><h3>' + title + '</h3>' +
+  const legend = STACKS[key] ? '<div class="tfoot">' + STACKS[key].map(([, name, col]) => '<span style="color:' + col + '">■</span> ' + name).join(' &nbsp; ') + '</div>' : '';
+  const note = key === 'returned' ? '<div class="tfoot">The last two days fill in once their next day is over.</div>'
+    : key === 'usage' ? '<div class="tfoot">Backups counted from 15 Oct 2026.</div>' : '';
+  return '<div class="trend"><h3>' + title + '</h3>' + legend + note +
     '<div class="tsum"><span class="big">' + big + '</span><span class="lbl">' + lbl + '</span>' + change + '</div>' +
     '<div class="tbars">' + avgLine + bars + '</div><div class="tlabs">' + labs + '</div>' +
     '<div class="tfoot">' + foot + '</div></div>';
@@ -807,12 +841,20 @@ const TIP_UNIT = {
   comments: ['comment', 'comments'],
   ratings: ['rating', 'ratings'],
   deletes: ['account deleted', 'accounts deleted'],
+  plus: ['new subscriber', 'new subscribers'],
+  returned: ['% came back the next day', '% came back the next day'],
+  method: ['new member', 'new members'],
+  usage: ['person used Plus', 'people used Plus'],
 };
 function tipFor(key, day, n, row, avg, isToday) {
   const date = new Date(day + 'T00:00:00Z').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
   const unit = TIP_UNIT[key][n === 1 ? 0 : 1];
   let detail = '';
-  if (key === 'joins' && n && row) {
+  if (key === 'returned' && row) {
+    detail = row.d1 + ' of ' + row.joined + ' joined that day came back the next day · ' + row.d7 + ' within 7 days';
+  } else if (key === 'usage' && row) {
+    detail = row.b + ' backed up · ' + row.s + ' synced';
+  } else if ((key === 'joins' || key === 'method') && n && row) {
     const other = n - (row.apple || 0) - (row.google || 0);
     detail = [['Apple', row.apple], ['Google', row.google], ['Email', other]].filter(([, v]) => v > 0).map(([k, v]) => v + ' ' + k).join(' · ');
   } else if ((key === 'comments' || key === 'ratings') && n && row && row.p) {
