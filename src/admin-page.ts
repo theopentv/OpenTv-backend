@@ -739,6 +739,7 @@ const TRENDS = [
   ['opened', 'Members who opened the app', 'avg'],
   ['comments', 'Comments written in the app', 'total'],
   ['ratings', 'Ratings given in the app', 'total'],
+  ['deletes', 'Accounts deleted', 'total'],
 ];
 function dayList(end, n) {
   const out = [];
@@ -750,12 +751,14 @@ function shortDay(d) {
   const dt = new Date(d + 'T00:00:00Z');
   return ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'][dt.getUTCDay()] + ' ' + d.slice(8);
 }
-function changeHtml(now, before) {
+// worse = a line where going up is bad news (deleted accounts): red up, green down.
+function changeHtml(now, before, worse) {
+  const good = (up) => (up !== !!worse ? 'up' : 'down');
   if (before == null) return '<span class="flat">no earlier data</span>';
-  if (before === 0) return now > 0 ? '<span class="up">▲ new</span>' : '<span class="flat">–</span>';
+  if (before === 0) return now > 0 ? '<span class="' + good(true) + '">▲ new</span>' : '<span class="flat">–</span>';
   const pct = Math.round(((now - before) / before) * 100);
   if (pct === 0) return '<span class="flat">= same as before</span>';
-  return '<span class="' + (pct > 0 ? 'up' : 'down') + '">' + (pct > 0 ? '▲ ' : '▼ ') + Math.abs(pct) + '% vs previous ' + trendDays + ' days</span>';
+  return '<span class="' + good(pct > 0) + '">' + (pct > 0 ? '▲ ' : '▼ ') + Math.abs(pct) + '% vs previous ' + trendDays + ' days</span>';
 }
 function drawTrend(key, title, kind, d) {
   const rows = d.series[key] || [];
@@ -771,7 +774,8 @@ function drawTrend(key, title, kind, d) {
   let before = prev.reduce((a, day) => a + (map[day] || 0), 0);
   const prevWhole = prev.slice(1);
   let beforeAvg = prevWhole.reduce((a, day) => a + (map[day] || 0), 0) / Math.max(1, prevWhole.length);
-  const known = key !== 'opened' || (d.openedSince && d.openedSince <= prev[0]);
+  // opened: kept 90 days; deletes: purged after 30, so a period before that is unknown.
+  const known = key === 'opened' ? (d.openedSince && d.openedSince <= prev[0]) : key === 'deletes' ? 2 * d.days <= 30 : true;
   if (!known) { before = null; beforeAvg = null; }
   const max = Math.max(1, ...vals);
   const best = vals.indexOf(Math.max(...vals));
@@ -779,7 +783,8 @@ function drawTrend(key, title, kind, d) {
   const every = d.days <= 14 ? 1 : d.days <= 30 ? 3 : 10;
   const big = kind === 'avg' ? (Math.round(avg * 10) / 10).toLocaleString() : total.toLocaleString();
   const lbl = kind === 'avg' ? 'a day on average' : 'in ' + d.days + ' days · ' + (Math.round(avg * 10) / 10) + ' a day';
-  const change = kind === 'avg' ? changeHtml(avg, beforeAvg) : changeHtml(total - vals[vals.length - 1], before == null ? null : before - (map[prev[prev.length - 1]] || 0));
+  const worse = key === 'deletes';
+  const change = kind === 'avg' ? changeHtml(avg, beforeAvg, worse) : changeHtml(total - vals[vals.length - 1], before == null ? null : before - (map[prev[prev.length - 1]] || 0), worse);
   const rowOf = {};
   rows.forEach((r) => { rowOf[r.day] = r; });
   const bars = vals.map((n, i) => {
@@ -790,7 +795,7 @@ function drawTrend(key, title, kind, d) {
   }).join('');
   const avgLine = avg > 0 ? '<div class="tavg" style="bottom:' + Math.round((avg / max) * 86) + '%" title="average ' + (Math.round(avg * 10) / 10) + '"></div>' : '';
   const labs = cur.map((day, i) => '<span>' + ((i % every === 0 || i === cur.length - 1) ? shortDay(day) : '') + '</span>').join('');
-  const foot = (total ? 'Best day: ' + shortDay(cur[best]) + ' (' + vals[best] + ')' : 'Nothing yet in this period') + (key === 'opened' && d.openedSince ? ' · counted since ' + d.openedSince : '');
+  const foot = (total ? 'Best day: ' + shortDay(cur[best]) + ' (' + vals[best] + ')' : 'Nothing yet in this period') + (key === 'opened' && d.openedSince ? ' · counted since ' + d.openedSince : '') + (key === 'deletes' && d.days > 30 ? ' · deleted accounts are purged after 30 days, so older days read empty' : '');
   return '<div class="trend"><h3>' + title + '</h3>' +
     '<div class="tsum"><span class="big">' + big + '</span><span class="lbl">' + lbl + '</span>' + change + '</div>' +
     '<div class="tbars">' + avgLine + bars + '</div><div class="tlabs">' + labs + '</div>' +
@@ -801,6 +806,7 @@ const TIP_UNIT = {
   opened: ['member opened the app', 'members opened the app'],
   comments: ['comment', 'comments'],
   ratings: ['rating', 'ratings'],
+  deletes: ['account deleted', 'accounts deleted'],
 };
 function tipFor(key, day, n, row, avg, isToday) {
   const date = new Date(day + 'T00:00:00Z').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });

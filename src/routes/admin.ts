@@ -1262,7 +1262,7 @@ admin.get('/admin/image/:id', async (c) => {
 // ── GET /v1/admin/trends?days=14|30|90 ───────────────────────────────────────
 
 /*
- * FOUR LINES OVER TIME, and the period before each, so a number can be read as
+ * FIVE LINES OVER TIME, and the period before each, so a number can be read as
  * better or worse rather than only as big or small. Counts per UTC day, never
  * who: joins (robots left out, as on the cards), members who opened the app
  * (profile_days — kept 90 days, so the period before a 90-day view is partly
@@ -1282,7 +1282,7 @@ admin.get('/admin/trends', async (c) => {
   // counts, never who.
   type Row = { day: string; n: number; p?: number; apple?: number; google?: number };
   const db = c.env.DB;
-  const [joins, opened, comments, ratings] = await Promise.all([
+  const [joins, opened, comments, ratings, deletes] = await Promise.all([
     db.prepare(
       `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n,
               SUM(EXISTS (SELECT 1 FROM identities i WHERE i.profile_id = pr.id AND i.provider = 'apple')) AS apple,
@@ -1300,6 +1300,14 @@ admin.get('/admin/trends', async (c) => {
       `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n, COUNT(DISTINCT author_id) AS p FROM ratings
         WHERE imported_at IS NULL AND created_at >= ? GROUP BY day`,
     ).bind(since).all<Row>(),
+    // Accounts their owners deleted, by the day they did it. A deleted profile
+    // is kept 30 days and then purged (jobs.ts), so only the last 30 days can
+    // be counted; the page says so instead of drawing empty days as zero.
+    db.prepare(
+      `SELECT substr(deleted_at, 1, 10) AS day, COUNT(*) AS n FROM profiles pr
+        WHERE deleted_at IS NOT NULL AND deleted_at >= ? AND NOT ${robotSql('pr')}
+        GROUP BY day`,
+    ).bind(since).all<Row>(),
   ]);
   const first = await db.prepare('SELECT MIN(day) AS d FROM profile_days').first<{ d: string | null }>();
   return c.json(
@@ -1312,6 +1320,7 @@ admin.get('/admin/trends', async (c) => {
         opened: opened.results ?? [],
         comments: comments.results ?? [],
         ratings: ratings.results ?? [],
+        deletes: deletes.results ?? [],
       },
     },
     200,
