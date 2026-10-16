@@ -13,7 +13,7 @@
  * is the opposite of the intent every single time this route is used.
  */
 import Database from 'better-sqlite3';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Env } from '@/env';
 import { call, freshDatabase, makeEnv } from './harness';
@@ -133,5 +133,88 @@ describe('POST /v1/admin/users/:handle/plus', () => {
     raw.prepare("UPDATE profiles SET deleted_at = ? WHERE handle_lower = 'amanda'").run('2026-08-30T00:00:00.000Z');
     const res = await give('amanda', 1);
     expect(res.status).toBe(404);
+  });
+});
+
+/**
+ * A PAYING SUBSCRIBER'S GIFT GOES TO THE STORE. RevenueCat is stubbed: the
+ * first call is the customer lookup, the second is /extend (Apple) or /defer
+ * (Google). A non-paying profile never reaches RevenueCat at all.
+ */
+describe('POST /v1/admin/users/:handle/plus for a paying subscriber', () => {
+  const calls: { url: string; body?: string }[] = [];
+  const customer = (store: string, product: string) => ({
+    subscriber: {
+      entitlements: { plus: { expires_date: '2099-01-01T00:00:00Z', product_identifier: product } },
+      subscriptions: { [product]: { store, store_transaction_id: 1000000652379790, expires_date: '2099-01-01T00:00:00Z' } },
+    },
+  });
+  const stub = (lookup: unknown, write: { status: number; body: unknown }) => {
+    calls.length = 0;
+    vi.stubGlobal('fetch', async (url: string, init?: { body?: string }) => {
+      calls.push({ url, body: init?.body });
+      const r = init?.body ? write : { status: 200, body: lookup };
+      return new Response(JSON.stringify(r.body), { status: r.status });
+    });
+  };
+  const after = { subscriber: { entitlements: { plus: { expires_date: '2099-01-31T00:00:00Z' } } } };
+
+  beforeEach(() => {
+    env = { ...env, RC_SECRET_API_KEY: 'sk_test' } as Env;
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('extends at Apple by transaction id and leaves plus_until alone', async () => {
+    profile('amanda', null, 1);
+    stub(customer('app_store', 'com.insightfy.opentv.plus.monthly'), { status: 200, body: after });
+    const res = await give('amanda', 1);
+    expect(res.status).toBe(200);
+    expect((res.json as { via: string }).via).toBe('app_store');
+    expect(calls[1]?.url).toContain('/subscriptions/1000000652379790/extend');
+    expect(JSON.parse(calls[1]?.body ?? '{}')).toEqual({ extend_by_days: 30, extend_reason_code: 1 });
+    expect(read('amanda').until).toBeNull();
+    const exp = raw.prepare("SELECT plus_expires_at AS e FROM profiles WHERE id = 'amanda'").get() as { e: string };
+    expect(exp.e).toBe('2099-01-31T00:00:00Z');
+  });
+
+  it('defers at Google by the subscription id before the colon', async () => {
+    profile('amanda', null, 1);
+    stub(customer('play_store', 'opentv_plus:monthly'), { status: 200, body: after });
+    const res = await give('amanda', 2);
+    expect(res.status).toBe(200);
+    expect(calls[1]?.url).toMatch(/\/subscriptions\/opentv_plus\/defer$/);
+    expect(JSON.parse(calls[1]?.body ?? '{}')).toEqual({ extend_by_days: 60 });
+  });
+
+  it('refuses more than 90 days at Apple without calling it', async () => {
+    profile('amanda', null, 1);
+    stub(customer('app_store', 'com.insightfy.opentv.plus.yearly'), { status: 200, body: after });
+    const res = await give('amanda', 6);
+    expect(res.status).toBe(400);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('passes on RevenueCat’s refusal instead of pretending', async () => {
+    profile('amanda', null, 1);
+    stub(customer('app_store', 'm'), { status: 400, body: { message: 'Only two extensions per year' } });
+    const res = await give('amanda', 1);
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(res.json)).toContain('two extensions');
+    expect(read('amanda').until).toBeNull();
+  });
+
+  it('falls back to plus_until for a promotional grant', async () => {
+    profile('amanda', null, 1);
+    stub(customer('promotional', 'rc_promo_plus'), { status: 200, body: after });
+    await give('amanda', 1);
+    expect(read('amanda').until).not.toBeNull();
+  });
+
+  it('never asks RevenueCat about somebody who is not paying', async () => {
+    profile('amanda');
+    stub({}, { status: 200, body: {} });
+    await give('amanda', 1);
+    expect(calls).toHaveLength(0);
+    expect(read('amanda').until).not.toBeNull();
   });
 });

@@ -38,6 +38,8 @@ export type ErrorCode =
   // `unavailable` means the capability is off, which is permanent from the
   // phone's point of view.
   | 'translate_failed'
+  // The dashboard's gift to a paying subscriber: Apple or Google said no.
+  | 'store_refused'
   // Signed in, but the email address behind the account is still unconfirmed.
   // Its own code rather than a plain `forbidden` because the app has to tell
   // these apart: one is "you may not", the other is "finish this first", and

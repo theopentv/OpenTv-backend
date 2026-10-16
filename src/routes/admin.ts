@@ -17,6 +17,7 @@ import {
   TEMPLATE_PERSONAS,
 } from '@/pure';
 import { sendMessagePush } from '@/push';
+import { rcExtend } from '@/routes/rc';
 import { supportOut, type SupportRow } from '@/routes/support-chat';
 import { overBudget } from '@/rate-limit';
 
@@ -1047,11 +1048,26 @@ admin.post('/admin/users/:handle/plus', async (c) => {
 
   const handle = c.req.param('handle').toLowerCase();
   const row = await c.env.DB.prepare(
-    'SELECT id, plus_until FROM profiles WHERE handle_lower = ? AND deleted_at IS NULL',
+    'SELECT id, plus_until, is_plus FROM profiles WHERE handle_lower = ? AND deleted_at IS NULL',
   )
     .bind(handle)
-    .first<{ id: string; plus_until: string | null }>();
+    .first<{ id: string; plus_until: string | null; is_plus: number | null }>();
   if (!row) return fail(c, 404, 'not_found', 'No such profile.');
+
+  /*
+   * A PAYING SUBSCRIBER GETS THE TIME AT THE STORE. `plus_until` would sit
+   * inside a period they already paid for while Apple or Google billed them on
+   * the usual date; moving the store's renewal date is the gift that is real.
+   * `null` from rcExtend (no key, promotional, lapsed) falls through to the
+   * date below, exactly as before.
+   */
+  if (months > 0 && row.is_plus === 1) {
+    const ext = await rcExtend(c.env, row.id, months === 12 ? 365 : months * 30);
+    if (ext && !ext.ok) return fail(c, ext.status, 'store_refused', ext.message);
+    if (ext?.ok) {
+      return c.json({ handle, via: ext.store, plus_expires_at: ext.expires }, 200, { 'Cache-Control': 'no-store' });
+    }
+  }
 
   if (months === 0) {
     await c.env.DB.prepare('UPDATE profiles SET plus_until = NULL WHERE id = ?').bind(row.id).run();

@@ -605,7 +605,10 @@ function wirePlus() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ months }),
       });
-      if (!res.ok) throw new Error((await res.json()).error?.message || 'failed');
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error?.message || 'failed');
+      // A paying subscriber's time went to the store, not plus_until.
+      if (out.via) alert('Extended at ' + (out.via === 'app_store' ? 'Apple' : 'Google Play') + '. Renews ' + (out.plus_expires_at ? baghdad(out.plus_expires_at) : 'later') + '.');
       await load();
     } catch (err) {
       alert(String(err.message || err));

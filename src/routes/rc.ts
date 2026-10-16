@@ -371,3 +371,78 @@ rc.post('/me/plus-check', requireAuth, async (c) => {
   if (rcPlus === true) granted = (await setPlus(c.env, me, true, nowIso)) || granted;
   return c.json({ ok: true, granted, checked_with_revenuecat: rcPlus !== null });
 });
+
+export type StoreExtend =
+  | { ok: true; store: 'app_store' | 'play_store'; expires: string | null }
+  | { ok: false; status: 400 | 409 | 502; message: string };
+
+/**
+ * GIVE A PAYING SUBSCRIBER TIME AT THE STORE, not on this server. A
+ * `plus_until` gift to somebody Apple or Google is billing does nothing: the
+ * store keeps charging on its own date and the gift sits inside a period they
+ * already paid for. Moving the store's renewal date is the only gift that is
+ * real, and it is what RevenueCat → Customers → "Extend subscription" does by
+ * hand — this is the same call, so the dashboard can do it in one click.
+ *
+ * Apple: `/extend` by the store transaction id, 1–90 days, at most twice a year
+ * per customer, and Apple emails them. Google: `/defer` by the subscription id
+ * (the product id before the colon), 1–365 days, and NO webhook follows — so
+ * the new end date is written here from the response instead of waiting.
+ *
+ * `null`: nothing to extend at a store (no key, not subscribed, a promotional
+ * grant) — the caller falls back to `plus_until`.
+ */
+export async function rcExtend(env: Env, profileId: string, days: number): Promise<StoreExtend | null> {
+  if (!env.RC_SECRET_API_KEY) return null;
+  const base = `https://api.revenuecat.com/v1/subscribers/${encodeURIComponent(profileId)}`;
+  const auth = { Authorization: `Bearer ${env.RC_SECRET_API_KEY}`, 'Content-Type': 'application/json' };
+  type Sub = { store?: string; store_transaction_id?: string | number; expires_date?: string | null };
+  type Body = { subscriber?: { entitlements?: Record<string, { expires_date?: string | null; product_identifier?: string }>; subscriptions?: Record<string, Sub> } };
+
+  let body: Body;
+  try {
+    const res = await fetch(base, { headers: auth });
+    if (!res.ok) return { ok: false, status: 502, message: `RevenueCat answered ${res.status} when asked about this customer.` };
+    body = (await res.json()) as Body;
+  } catch {
+    return { ok: false, status: 502, message: 'Could not reach RevenueCat.' };
+  }
+  const ent = body.subscriber?.entitlements?.[PLUS_ENTITLEMENT];
+  if (!ent?.product_identifier || (ent.expires_date && Date.parse(ent.expires_date) <= Date.now())) return null;
+  const sub = body.subscriber?.subscriptions?.[ent.product_identifier];
+
+  let url: string;
+  let payload: Record<string, number>;
+  if (sub?.store === 'app_store') {
+    if (days > 90) return { ok: false, status: 400, message: 'Apple allows at most 90 days (3 months) per extension.' };
+    if (sub.store_transaction_id == null) return { ok: false, status: 502, message: 'RevenueCat gave no Apple transaction id.' };
+    url = `${base}/subscriptions/${encodeURIComponent(String(sub.store_transaction_id))}/extend`;
+    payload = { extend_by_days: days, extend_reason_code: 1 }; // 1 = Customer Satisfaction
+  } else if (sub?.store === 'play_store') {
+    url = `${base}/subscriptions/${encodeURIComponent(ent.product_identifier.split(':')[0] ?? '')}/defer`;
+    payload = { extend_by_days: days };
+  } else {
+    return null;
+  }
+
+  try {
+    const res = await fetch(url, { method: 'POST', headers: auth, body: JSON.stringify(payload) });
+    const text = await res.text();
+    if (!res.ok) {
+      // RC's own words: "two extensions a year", a billing-retry state, or a key
+      // without write access — each needs a person to read it, not a retry.
+      let msg = text.slice(0, 300);
+      try {
+        msg = (JSON.parse(text) as { message?: string }).message ?? msg;
+      } catch {
+        /* not JSON */
+      }
+      return { ok: false, status: res.status === 400 ? 409 : 502, message: `RevenueCat refused (${res.status}): ${msg}` };
+    }
+    const after = (JSON.parse(text) as Body).subscriber?.entitlements?.[PLUS_ENTITLEMENT]?.expires_date ?? null;
+    await notePlusExpiry(env, profileId, after);
+    return { ok: true, store: sub.store, expires: after };
+  } catch {
+    return { ok: false, status: 502, message: 'Could not reach RevenueCat.' };
+  }
+}
