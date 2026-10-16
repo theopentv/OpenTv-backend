@@ -412,7 +412,9 @@ function todayCell(u) {
   let libraryText = '';
   if (u.library_on_day) {
     if (joinedThatDay || u.day_base_episodes == null) {
-      libraryVerb = joinedThatDay ? 'joined with' : 'synced';
+      // Not Plus Sync: the phone republished its profile totals and there is no
+      // start-of-day count to subtract, so this is the whole library.
+      libraryVerb = joinedThatDay ? 'joined with' : 'library now';
       libraryText = esc(u.episodes_watched ?? 0) + ' episodes &middot; ' + esc(u.movies_watched ?? 0) + ' films';
     } else {
       const de = (u.episodes_watched ?? 0) - u.day_base_episodes;
