@@ -372,6 +372,39 @@ rc.post('/me/plus-check', requireAuth, async (c) => {
   return c.json({ ok: true, granted, checked_with_revenuecat: rcPlus !== null });
 });
 
+/**
+ * GET /v1/me/offer — this person's personal offer, while it runs.
+ *
+ * `{ offer: { offer_id, ends_at } }` or `{ offer: null }`. Only a signed-in
+ * phone asks, and only from the paywall. Ended and used offers answer null,
+ * and never come back (see the admin route). The dashboard's label stays
+ * on the server.
+ */
+rc.get('/me/offer', requireAuth, async (c) => {
+  const row = await c.env.DB.prepare(
+    `SELECT offer_id, ends_at FROM personal_offers
+      WHERE profile_id = ? AND ends_at > ? AND consumed_at IS NULL
+      ORDER BY ends_at LIMIT 1`,
+  )
+    .bind(c.get('profileId'), new Date().toISOString())
+    .first<{ offer_id: string; ends_at: string }>();
+  return c.json({ offer: row ?? null }, 200, { 'Cache-Control': 'no-store' });
+});
+
+/**
+ * POST /v1/me/offer/used — the phone bought through it, so it is spent.
+ * Trusting the phone here is safe: the only thing it can do is take its own
+ * offer away.
+ */
+rc.post('/me/offer/used', requireAuth, async (c) => {
+  await c.env.DB.prepare(
+    'UPDATE personal_offers SET consumed_at = ? WHERE profile_id = ? AND consumed_at IS NULL AND ends_at > ?',
+  )
+    .bind(new Date().toISOString(), c.get('profileId'), new Date().toISOString())
+    .run();
+  return c.json({ ok: true }, 200, { 'Cache-Control': 'no-store' });
+});
+
 export type StoreExtend =
   | { ok: true; store: 'app_store' | 'play_store'; expires: string | null }
   | { ok: false; status: 400 | 409 | 502; message: string };
