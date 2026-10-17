@@ -965,9 +965,13 @@ const FILTERS = [
 const activeFilters = new Set();
 
 function drawChips() {
+  // EACH COUNT IS "IF YOU ALSO PICKED THIS": the people matching every chip
+  // already on, plus this one. With nothing on it is the plain total, as before.
+  const on = FILTERS.filter((x) => activeFilters.has(x.id));
+  const base = allPeople.filter((u) => on.every((x) => x.test(u)));
   $('chips').innerHTML = FILTERS.map((f) =>
     '<button class="chip' + (activeFilters.has(f.id) ? ' on' : '') + '" data-f="' + f.id + '" aria-pressed="' + activeFilters.has(f.id) + '">' +
-    f.label() + '<span class="n">' + allPeople.filter(f.test).length + '</span></button>').join('') +
+    f.label() + '<span class="n">' + base.filter(f.test).length + '</span></button>').join('') +
     (activeFilters.size ? '<button class="chip clear" data-f="__clear">Clear</button>' : '');
 }
 
