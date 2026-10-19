@@ -372,6 +372,34 @@ describe('the admin dashboard', () => {
       expect(res.json.also_decided).toBe(0);
       expect(statusOf('c2')).toBe('pending');
     });
+
+    it('"Show all" really shows them: bulk is not taken for a comment id', async () => {
+      // Until 20 Oct `/admin/images/:id` was registered first and swallowed
+      // "bulk", answering ok while changing nothing.
+      seed('c1', null);
+      seed('c2', null);
+      seed('c3', null);
+      const res = await call(env, 'POST', '/v1/admin/images/bulk', {
+        headers: { Cookie: await cookie() },
+        body: { ids: ['c1', 'c2'], status: 'clean' },
+      });
+      expect(res.status).toBe(200);
+      expect(res.json.changed).toBe(2);
+      expect(statusOf('c1')).toBe('clean');
+      expect(statusOf('c2')).toBe('clean');
+      expect(statusOf('c3')).toBe('pending');
+    });
+
+    it('lists one member\'s waiting photos when asked by handle', async () => {
+      seed('c1', null);
+      raw.prepare("INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p2','Other','other','2026-01-01')").run();
+      raw.prepare(`INSERT INTO comments (id, author_id, target_source, target_key, body, created_at)
+                   VALUES ('c9', 'p2', 'tvdb', 'show:1', 'x', '2026-01-01T00:00:00.000Z')`).run();
+      raw.prepare(`INSERT INTO comment_images (comment_id, r2_key, is_gif, scan_status, created_at)
+                   VALUES ('c9', 'comments/c9.gif', 1, 'pending', '2026-01-01T00:00:00.000Z')`).run();
+      const res = await call(env, 'GET', '/v1/admin/images?status=pending&handle=@Other', { headers: { Cookie: await cookie() } });
+      expect(res.json.items.map((i: { comment_id: string }) => i.comment_id)).toEqual(['c9']);
+    });
   });
 });
 

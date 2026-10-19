@@ -1149,6 +1149,56 @@ admin.get('/admin/images', async (c) => {
   return c.json({ items: res.results ?? [] }, 200, { 'Cache-Control': 'no-store' });
 });
 
+/**
+ * SHOW EVERYTHING CURRENTLY IN THE QUEUE.
+ *
+ * REGISTERED BEFORE `/admin/images/:id`, ON PURPOSE. Hono matches in order, and
+ * after it `:id` took "bulk" as a comment id: it updated nothing and answered
+ * ok, so the button refreshed and nothing was shown (found 20 Oct).
+ *
+ * A bulk approve is exactly what the per-image queue was built to avoid, so it
+ * takes the ids rather than a status: the page sends the pictures it has
+ * rendered, which means the button can only clear images that were on screen.
+ * There is no "approve all pending" — an image uploaded a minute ago, by
+ * somebody who joined a minute ago, is not covered by a decision made before it
+ * existed.
+ *
+ * Capped at the page size for the same reason.
+ */
+admin.post('/admin/images/bulk', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const b = (body ?? {}) as { ids?: unknown; status?: unknown };
+  const status = b.status;
+  if (status !== 'clean' && status !== 'blocked') {
+    return fail(c, 400, 'invalid_body', 'status must be clean or blocked.');
+  }
+  const ids = Array.isArray(b.ids) ? b.ids.filter((v): v is string => typeof v === 'string') : [];
+  if (ids.length === 0) return fail(c, 400, 'invalid_body', 'ids are required.');
+  if (ids.length > 200) return fail(c, 400, 'invalid_body', 'At most 200 at a time.');
+
+  const now = new Date().toISOString();
+  const res = await c.env.DB.batch(
+    ids.map((id) =>
+      c.env.DB.prepare(
+        // `AND scan_status = 'pending'` so this can never silently reverse a
+        // decision already made about an image, in either direction.
+        "UPDATE comment_images SET scan_status = ?, scanned_at = ? WHERE comment_id = ? AND scan_status = 'pending'",
+      ).bind(status, now, id),
+    ),
+  );
+
+  const changed = res.reduce((n, r) => n + (r.meta?.changes ?? 0), 0);
+  return c.json({ ok: true, status, changed });
+});
+
 admin.post('/admin/images/:id', async (c) => {
   if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
     return fail(c, 401, 'unauthenticated', 'Sign in first.');
@@ -1207,52 +1257,6 @@ admin.post('/admin/images/:id', async (c) => {
   // Reported so the moderation screen can say "and 12 others" rather than
   // leaving somebody to wonder why the queue jumped.
   return c.json({ ok: true, status, also_decided: alsoDecided });
-});
-
-/**
- * SHOW EVERYTHING CURRENTLY IN THE QUEUE.
- *
- * A bulk approve is exactly what the per-image queue was built to avoid, so it
- * takes the ids rather than a status: the page sends the pictures it has
- * rendered, which means the button can only clear images that were on screen.
- * There is no "approve all pending" — an image uploaded a minute ago, by
- * somebody who joined a minute ago, is not covered by a decision made before it
- * existed.
- *
- * Capped at the page size for the same reason.
- */
-admin.post('/admin/images/bulk', async (c) => {
-  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
-    return fail(c, 401, 'unauthenticated', 'Sign in first.');
-  }
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
-  }
-  const b = (body ?? {}) as { ids?: unknown; status?: unknown };
-  const status = b.status;
-  if (status !== 'clean' && status !== 'blocked') {
-    return fail(c, 400, 'invalid_body', 'status must be clean or blocked.');
-  }
-  const ids = Array.isArray(b.ids) ? b.ids.filter((v): v is string => typeof v === 'string') : [];
-  if (ids.length === 0) return fail(c, 400, 'invalid_body', 'ids are required.');
-  if (ids.length > 200) return fail(c, 400, 'invalid_body', 'At most 200 at a time.');
-
-  const now = new Date().toISOString();
-  const res = await c.env.DB.batch(
-    ids.map((id) =>
-      c.env.DB.prepare(
-        // `AND scan_status = 'pending'` so this can never silently reverse a
-        // decision already made about an image, in either direction.
-        "UPDATE comment_images SET scan_status = ?, scanned_at = ? WHERE comment_id = ? AND scan_status = 'pending'",
-      ).bind(status, now, id),
-    ),
-  );
-
-  const changed = res.reduce((n, r) => n + (r.meta?.changes ?? 0), 0);
-  return c.json({ ok: true, status, changed });
 });
 
 /** The picture itself, at any status, to the one person who must look at it. */
