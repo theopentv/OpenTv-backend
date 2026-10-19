@@ -290,6 +290,7 @@ export const ADMIN_PAGE = `<!doctype html>
       <button class="tab" data-status="blocked">Blocked</button>
     </div>
     <p class="note" id="revnote"></p>
+    <p class="note" id="revwho" hidden></p>
     <div class="shots" id="review"></div>
     <div class="bulkbar" id="bulkbar" hidden>
       <button class="ghost" id="showall">Show all on this page</button>
@@ -1063,6 +1064,8 @@ function drawPeople() {
  * no "approve the rest", no keyboard shortcut that could run away with a list.
  */
 let reviewStatus = 'pending';
+// One member's queue (click a picture's @handle). Empty = everyone.
+let reviewHandle = '';
 
 
 // ── Messages ("Message the developer", 1.6.7) ──────────────────────────────
@@ -1120,7 +1123,8 @@ $('chatsend').onclick = async () => {
 };
 
 async function loadReview() {
-  const res = await fetch('/v1/admin/images?status=' + reviewStatus, { credentials: 'same-origin' });
+  const res = await fetch('/v1/admin/images?status=' + reviewStatus +
+    (reviewHandle ? '&handle=' + encodeURIComponent(reviewHandle) : ''), { credentials: 'same-origin' });
   if (!res.ok) return;
   const { items = [] } = await res.json();
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
@@ -1138,13 +1142,17 @@ async function loadReview() {
   // "Show all" is a way to clear a backlog, not a way to re-approve or to undo
   // a block, so it belongs to the waiting list alone.
   $('bulkbar').hidden = items.length === 0 || reviewStatus !== 'pending';
+  $('revwho').hidden = !reviewHandle;
+  $('revwho').innerHTML = reviewHandle
+    ? 'Only @' + esc(reviewHandle) + ' (' + items.length + '). <a href="#" id="revall">Show everyone</a>' : '';
+  $('showall').textContent = reviewHandle ? 'Show all ' + items.length + ' from @' + reviewHandle : 'Show all on this page';
 
   $('review').innerHTML = items.map((i) => {
     const where = i.season == null ? '' :
       ' · S' + i.season + (i.episode == null ? '' : 'E' + i.episode);
     return '<div class="shot" data-id="' + esc(i.comment_id) + '">' +
       '<img loading="lazy" src="/v1/admin/image/' + encodeURIComponent(i.comment_id) + '" alt="">' +
-      '<div class="meta"><div class="who">@' + esc(i.handle) + (i.is_gif ? ' · GIF' : '') + '</div>' +
+      '<div class="meta"><div class="who"><a href="#" data-who="' + esc(i.handle) + '">@' + esc(i.handle) + '</a>' + (i.is_gif ? ' · GIF' : '') + '</div>' +
       '<div class="cap">' + esc(i.body || '(no caption)') + esc(where) + '</div></div>' +
       '<div class="btns">' +
       (reviewStatus === 'clean' ? '' : '<button data-do="clean">Show</button>') +
@@ -1183,15 +1191,36 @@ $('showall').addEventListener('click', async () => {
   if (!confirm('Show all ' + ids.length + ' of these photos to everyone?')) return;
   $('showall').disabled = true;
   $('showall').textContent = 'Working…';
-  const res = await fetch('/v1/admin/images/bulk', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    credentials: 'same-origin',
-    body: JSON.stringify({ ids, status: 'clean' }),
-  });
+  // The server takes 200 at a time; one person's archive can be more.
+  let ok = true;
+  for (let i = 0; i < ids.length && ok; i += 200) {
+    const res = await fetch('/v1/admin/images/bulk', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ ids: ids.slice(i, i + 200), status: 'clean' }),
+    });
+    ok = res.ok;
+  }
   $('showall').disabled = false;
-  $('showall').textContent = 'Show all on this page';
-  if (res.ok) { await load(); }
+  if (!ok) alert('Some were not saved. Reload and try again.');
+  reviewHandle = '';
+  await load();
+});
+
+// Click a picture's @handle to see only that member's queue.
+$('review').addEventListener('click', (ev) => {
+  const who = ev.target.closest('a[data-who]');
+  if (!who) return;
+  ev.preventDefault();
+  reviewHandle = who.dataset.who;
+  void loadReview();
+});
+$('revwho').addEventListener('click', (ev) => {
+  if (ev.target.id !== 'revall') return;
+  ev.preventDefault();
+  reviewHandle = '';
+  void loadReview();
 });
 
 // Delegated, so buttons rendered after this file loads still work.

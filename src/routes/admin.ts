@@ -1096,10 +1096,11 @@ admin.post('/admin/users/:handle/plus', async (c) => {
  *
  * `GET /v1/comments/:id/image` serves `clean` and nothing else, and nothing in
  * the codebase writes `clean` except the route below — one person, signed in,
- * having looked at the picture. There is no bulk approve, no default, and no
- * "approve everything from this user": each of those would be a way for an
- * image to become public without being seen, which is the single thing this
- * queue exists to prevent.
+ * having looked at the picture. There is no default and no "approve everything
+ * from this user, including later": each would make an image public without
+ * being seen, which is the single thing this queue exists to prevent. The page
+ * can filter to one member and "Show all" what it rendered (20 Oct, for
+ * imported TV Time archives of hundreds of GIFs); later uploads stay pending.
  *
  * The reviewer sees the picture through `GET /v1/admin/image/:id`, which is
  * cookie-gated and serves ANY status — that is the whole job. It is the one
@@ -1115,6 +1116,11 @@ admin.get('/admin/images', async (c) => {
     return fail(c, 400, 'invalid_body', 'Unknown status.');
   }
 
+  // ONE PERSON'S QUEUE. Filtering by handle lets the page show everything one
+  // member has waiting (an imported TV Time archive can be hundreds of GIFs),
+  // so "Show all" can clear exactly those, after they have been on screen.
+  // Later uploads are untouched: they arrive pending like any other.
+  const handle = (c.req.query('handle') ?? '').trim().toLowerCase().replace(/^@/, '');
   const res = await c.env.DB.prepare(
     `SELECT ci.comment_id, ci.is_gif, ci.scan_status, ci.created_at,
             p.handle,
@@ -1133,10 +1139,11 @@ admin.get('/admin/images', async (c) => {
        JOIN comments cm ON cm.id = ci.comment_id
        JOIN profiles p  ON p.id  = cm.author_id
       WHERE ci.scan_status = ? AND cm.deleted_at IS NULL
+        AND (? = '' OR p.handle_lower = ?)
       ORDER BY ci.created_at DESC
-      LIMIT 200`,
+      LIMIT ${handle ? 1000 : 200}`,
   )
-    .bind(new Date().toISOString(), status)
+    .bind(new Date().toISOString(), status, handle, handle)
     .all<Record<string, unknown>>();
 
   return c.json({ items: res.results ?? [] }, 200, { 'Cache-Control': 'no-store' });
