@@ -1191,19 +1191,27 @@ $('showall').addEventListener('click', async () => {
   if (!confirm('Show all ' + ids.length + ' of these photos to everyone?')) return;
   $('showall').disabled = true;
   $('showall').textContent = 'Working…';
-  // The server takes 200 at a time; one person's archive can be more.
-  let ok = true;
-  for (let i = 0; i < ids.length && ok; i += 200) {
-    const res = await fetch('/v1/admin/images/bulk', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify({ ids: ids.slice(i, i + 200), status: 'clean' }),
-    });
-    ok = res.ok;
+  // The server takes 200 at a time; one person's archive can be more. The
+  // button counts as it goes and the result is said out loud, because a page
+  // that only refreshes is how a broken bulk route went unnoticed (20 Oct).
+  let changed = 0, failed = '';
+  for (let i = 0; i < ids.length && !failed; i += 200) {
+    $('showall').textContent = 'Working… ' + Math.min(i + 200, ids.length) + ' / ' + ids.length;
+    try {
+      const res = await fetch('/v1/admin/images/bulk', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ ids: ids.slice(i, i + 200), status: 'clean' }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok) failed = (out.error && out.error.message) || ('error ' + res.status);
+      else changed += out.changed || 0;
+    } catch (e) { failed = 'network error'; }
   }
   $('showall').disabled = false;
-  if (!ok) alert('Some were not saved. Reload and try again.');
+  alert(failed ? 'Stopped: ' + failed + '. ' + changed + ' were shown before that.'
+               : changed + ' of ' + ids.length + ' are now shown.');
   reviewHandle = '';
   await load();
 });
