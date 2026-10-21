@@ -40,6 +40,10 @@ export type ErrorCode =
   | 'translate_failed'
   // The dashboard's gift to a paying subscriber: Apple or Google said no.
   | 'store_refused'
+  // A personal offer (0061): one is already running, or this person has had
+  // this one before. Either way the countdown cannot start again.
+  | 'offer_running'
+  | 'offer_given'
   // Signed in, but the email address behind the account is still unconfirmed.
   // Its own code rather than a plain `forbidden` because the app has to tell
   // these apart: one is "you may not", the other is "finish this first", and

@@ -1089,6 +1089,80 @@ admin.post('/admin/users/:handle/plus', async (c) => {
   return c.json({ handle, plus_until: until }, 200, { 'Cache-Control': 'no-store' });
 });
 
+/** A store offer identifier: Apple's promotional offer id, or Play's offer id
+ *  / tag. Both stores allow letters, digits, dots, dashes and underscores. */
+const OFFER_ID = /^[A-Za-z0-9._:-]{1,100}$/;
+/** A month at most. A countdown of weeks is not a countdown any more. */
+const MAX_OFFER_HOURS = 24 * 30;
+
+/**
+ * POST /v1/admin/users/:handle/offer — a personal offer with a real end.
+ *
+ * Body `{ offer_id, hours, label? }`. The person's paywall shows "A special
+ * offer for you" with a countdown to `ends_at` and buys through that store
+ * offer (`GET /v1/me/offer`).
+ *
+ * THE END NEVER MOVES, which is what makes the countdown honest (Apple treats a
+ * timer that restarts as a deceptive one). So: a second offer while one is
+ * running is refused rather than replacing it, and the same offer id can never
+ * be given to the same person twice — not even after it ran out, because
+ * "it ended, and here it is again" is the restarting timer by another route.
+ * `hours: 0` ends a running offer NOW, the only way to undo a mistake; it
+ * shortens, never lengthens.
+ */
+admin.post('/admin/users/:handle/offer', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  let body: { offer_id?: unknown; hours?: unknown; label?: unknown };
+  try {
+    body = (await c.req.json()) as typeof body;
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const { hours } = body;
+  if (typeof hours !== 'number' || !Number.isInteger(hours) || hours < 0 || hours > MAX_OFFER_HOURS) {
+    return fail(c, 400, 'invalid_body', `hours must be a whole number from 0 to ${MAX_OFFER_HOURS}.`);
+  }
+  const row = await c.env.DB.prepare('SELECT id FROM profiles WHERE handle_lower = ? AND deleted_at IS NULL')
+    .bind(c.req.param('handle').toLowerCase())
+    .first<{ id: string }>();
+  if (!row) return fail(c, 404, 'not_found', 'No such profile.');
+  const now = new Date();
+  const nowIso = now.toISOString();
+
+  if (hours === 0) {
+    const r = await c.env.DB.prepare(
+      'UPDATE personal_offers SET ends_at = ? WHERE profile_id = ? AND ends_at > ? AND consumed_at IS NULL',
+    )
+      .bind(nowIso, row.id, nowIso)
+      .run();
+    return c.json({ ended: r.meta.changes ?? 0 }, 200, { 'Cache-Control': 'no-store' });
+  }
+
+  const offerId = typeof body.offer_id === 'string' ? body.offer_id.trim() : '';
+  if (!OFFER_ID.test(offerId)) return fail(c, 400, 'invalid_body', 'offer_id must be the store offer identifier.');
+  const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim().slice(0, 80) : null;
+
+  const running = await c.env.DB.prepare(
+    'SELECT offer_id, ends_at FROM personal_offers WHERE profile_id = ? AND ends_at > ? AND consumed_at IS NULL',
+  )
+    .bind(row.id, nowIso)
+    .first<{ offer_id: string; ends_at: string }>();
+  if (running) {
+    return fail(c, 409, 'offer_running', `${running.offer_id} is running until ${running.ends_at}. End it first (hours 0).`);
+  }
+  const endsAt = new Date(now.getTime() + hours * 3600_000).toISOString();
+  // OR IGNORE + changes: the primary key answers "given before" in one statement.
+  const r = await c.env.DB.prepare(
+    `INSERT OR IGNORE INTO personal_offers (profile_id, offer_id, label, ends_at, created_at) VALUES (?, ?, ?, ?, ?)`,
+  )
+    .bind(row.id, offerId, label, endsAt, nowIso)
+    .run();
+  if (!r.meta.changes) return fail(c, 409, 'offer_given', 'This person has had this offer before; it cannot start again.');
+  return c.json({ offer_id: offerId, ends_at: endsAt }, 200, { 'Cache-Control': 'no-store' });
+});
+
 // ── Image review ────────────────────────────────────────────────────────────
 
 /**

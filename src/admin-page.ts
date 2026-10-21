@@ -549,7 +549,8 @@ function grantCell(handle) {
     '<option value="' + m + '">' + (m === 0 ? 'remove' : m === 12 ? '1 year' : m + ' month' + (m > 1 ? 's' : '')) + '</option>',
   ).join('');
   return '<div class="plusbox"><select data-h="' + handle + '">' + opts + '</select>' +
-    '<button data-give="' + handle + '">Give</button></div>';
+    '<button data-give="' + handle + '">Give</button>' +
+    '<button class="more" data-offer="' + handle + '">Give offer</button></div>';
 }
 
 /**
@@ -618,6 +619,48 @@ function wirePlus() {
       btn.disabled = false;
       btn.textContent = 'Give';
     }
+  });
+}
+
+/**
+ * A PERSONAL OFFER: the store offer's id and how many hours it runs. The
+ * person's paywall counts down to the end, and the end never moves — a running
+ * offer must be ended (hours 0) before another, and the same offer can never be
+ * given to the same person twice. KNOWN_OFFERS are the ids set up in App Store
+ * Connect / Play Console; any other id can still be typed.
+ */
+const KNOWN_OFFERS = ['plus_personal_annual_50', 'plus_personal_monthly_50'];
+function wireOffer() {
+  $('users').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-offer]');
+    if (!btn) return;
+    const handle = btn.getAttribute('data-offer');
+    const hours = prompt('Personal offer for @' + handle + ': how many hours? (1 to 720, or 0 to end their running offer now)', '48');
+    if (hours == null) return;
+    const h = Number(hours);
+    let offerId = '';
+    let label = null;
+    if (h !== 0) {
+      offerId = prompt('Store offer id (same id in App Store Connect and Play):\\n' + KNOWN_OFFERS.join('\\n'), KNOWN_OFFERS[0]) || '';
+      if (!offerId.trim()) return;
+      label = prompt('Note for yourself (optional, never shown to them):', '') || null;
+      if (!confirm('Give @' + handle + ' offer ' + offerId.trim() + ' for ' + h + ' hours? The countdown cannot be restarted.')) return;
+    } else if (!confirm('End the running offer for @' + handle + ' now?')) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/v1/admin/users/' + encodeURIComponent(handle) + '/offer', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ offer_id: offerId.trim(), hours: h, label }),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error?.message || 'failed');
+      alert(h === 0 ? 'Ended ' + out.ended + ' offer(s).' : 'Offer ' + out.offer_id + ' runs until ' + baghdad(out.ends_at) + '.');
+    } catch (err) {
+      alert(String(err.message || err));
+    }
+    btn.disabled = false;
   });
 }
 
@@ -1461,6 +1504,7 @@ $('out').addEventListener('click', async () => {
 // Once, before the first render. The rows are replaced on every refresh, so
 // the listener lives on the table rather than on the buttons inside it.
 wirePlus();
+wireOffer();
 wireMore();
 wireMessage();
 load();

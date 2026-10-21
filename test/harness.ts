@@ -77,6 +77,7 @@ const MIGRATION_FILES = [
   '../migrations/0058_plus_expires.sql',
   '../migrations/0059_blocks_blocked_index.sql',
   '../migrations/0060_backup_days.sql',
+  '../migrations/0061_personal_offers.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>
