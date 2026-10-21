@@ -44,6 +44,11 @@ export type ErrorCode =
   // this one before. Either way the countdown cannot start again.
   | 'offer_running'
   | 'offer_given'
+  // A shared list (or a together) at its member or item ceiling. A fact about
+  // the list, not the person: as `forbidden` the app said "That sign-in wasn't
+  // accepted" (21 Oct). Still a 403, so an app that predates it treats it the
+  // same way; 1.7.0 already knows the code and shows this message's English.
+  | 'list_full'
   // Signed in, but the email address behind the account is still unconfirmed.
   // Its own code rather than a plain `forbidden` because the app has to tell
   // these apart: one is "you may not", the other is "finish this first", and

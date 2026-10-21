@@ -294,7 +294,7 @@ sharedLists.post('/shared-lists/join', requireAuth, async (c) => {
   // A together is a sofa, not a channel (D9): five, so a code pasted somewhere
   // public cannot grow it into an audience.
   const cap = list.kind === 'together' ? MAX_TOGETHER_MEMBERS : MAX_MEMBERS;
-  if ((count?.n ?? 0) >= cap) return fail(c, 403, 'forbidden', 'This list is full.');
+  if ((count?.n ?? 0) >= cap) return fail(c, 403, 'list_full', 'This list is full.');
 
   /*
    * NO PLUS CHECK, AND THERE NEVER WILL BE ONE. Charging to accept an invite
@@ -482,7 +482,7 @@ sharedLists.post('/shared-lists/:id/items', requireAuth, async (c) => {
   const count = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM shared_list_items WHERE list_id = ?')
     .bind(id)
     .first<{ n: number }>();
-  if ((count?.n ?? 0) >= MAX_ITEMS) return fail(c, 403, 'forbidden', 'This list is full.');
+  if ((count?.n ?? 0) >= MAX_ITEMS) return fail(c, 403, 'list_full', 'This list is full.');
 
   /*
    * INSERT OR IGNORE against the (list, source, key) unique index. Two people

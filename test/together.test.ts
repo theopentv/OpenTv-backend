@@ -87,6 +87,8 @@ describe('joining a together', () => {
     }
     const sixth = await call(env, 'POST', '/v1/shared-lists/join', { token: await t('d'), body: { invite_code } });
     expect(sixth.status).toBe(403);
+    // Its own code: as `forbidden` the app read it as a rejected sign-in.
+    expect(sixth.json).toMatchObject({ error: { code: 'list_full' } });
   });
 });
 
