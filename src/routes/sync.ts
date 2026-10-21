@@ -98,6 +98,9 @@ const isPlus = hasPlus;
  */
 export const DEVICE_LIMIT = 5;
 
+/** How stale `devices.last_seen` may get before a sync rewrites it. */
+export const LAST_SEEN_EVERY_MS = 60 * 60 * 1000;
+
 /**
  * THE REGISTRY (0054): who this device is, and whether it may still sync.
  *
@@ -110,12 +113,10 @@ export const DEVICE_LIMIT = 5;
  *     full set. The existing five carry on; this one is turned away.
  *   - null: carry on.
  *
- * AT MOST ONE WRITE A DAY PER DEVICE, the same guard `requireAuth` keeps for
- * `last_seen_at`: a phone polls every minute, and sixty writes an hour per
- * open app is the whole D1 budget. A new device costs one INSERT; a known one
- * costs nothing until the date changes. The name and platform ride on that
- * same daily write — a renamed phone shows its new name tomorrow, which is
- * soon enough.
+ * AT MOST ONE WRITE AN HOUR PER DEVICE: a phone polls every minute, and sixty
+ * writes an hour per open app is the whole D1 budget. A new device costs one
+ * INSERT; a known one costs nothing until its stamp is an hour old. The name
+ * and platform ride on that same write.
  *
  * ponytail: the cap is a read-then-insert, so two NEW devices racing on the
  * same second can both land as the fifth. Harmless; a transaction if it ever
@@ -148,9 +149,11 @@ async function registerDevice(
     return null;
   }
 
-  // ISO strings order as dates do, so "before today" is a string compare —
-  // the trick `requireAuth` already relies on.
-  if (row.last_seen < now.slice(0, 10)) {
+  // ISO strings order as dates do, so "over an hour ago" is a string compare.
+  // HOURLY, not daily (21 Oct): compared against today's DATE, a full ISO
+  // stamp from this morning never sorts below it, so "Your devices" showed
+  // every phone last seen when it was first seen, all day.
+  if (row.last_seen < new Date(Date.now() - LAST_SEEN_EVERY_MS).toISOString()) {
     await c.env.DB.prepare(
       'UPDATE devices SET last_seen = ?, name = COALESCE(?, name), platform = COALESCE(?, platform) WHERE profile_id = ? AND device = ?',
     )
@@ -275,11 +278,28 @@ sync.post('/sync', requireAuth, async (c) => {
   });
 });
 
-/** Everything this profile has in flight, dropped. The counterpart of
- *  `DELETE /v1/backup`: turning sync off should leave nothing behind, and like
- *  that route it is gated on nothing — you can always stop. */
+/**
+ * ONE DEVICE turning sync off: what IT put in flight, dropped. Gated on
+ * nothing — you can always stop.
+ *
+ * NEVER THE WHOLE ACCOUNT (21 Oct). It used to delete every row of the
+ * profile, so the tablet switching off took with it the phone's changes the
+ * laptop had not pulled yet — gone, and nothing said so. The device comes in
+ * `X-OpenTV-Device`, the header the backup upload already sends. A client that
+ * sends none (1.7 and older) deletes nothing: rows it cannot attribute are
+ * other devices' as much as its own, and `RETAIN_DAYS` prunes them anyway.
+ *
+ * ponytail: this device's OWN ops that another device has not pulled yet go
+ * too — no per-device cursor is kept to know. Store the pull cursor on the
+ * hourly `devices` write if that ever matters.
+ */
 sync.delete('/sync', requireAuth, async (c) => {
-  await c.env.DB.prepare('DELETE FROM sync_ops WHERE profile_id = ?').bind(c.get('profileId')).run();
+  const device = readDevice(c.req.header('X-OpenTV-Device'));
+  if (device) {
+    await c.env.DB.prepare('DELETE FROM sync_ops WHERE profile_id = ? AND device_id = ?')
+      .bind(c.get('profileId'), device)
+      .run();
+  }
   return c.json({ ok: true });
 });
 

@@ -170,11 +170,29 @@ describe('what a push may contain', () => {
 });
 
 describe('turning it off', () => {
-  it('drops everything in flight, and needs no subscription to do it', async () => {
+  const off = (headers: Record<string, string> = { 'X-OpenTV-Device': 'phone' }) =>
+    call(env, 'DELETE', '/v1/sync', { token: tokenP1, headers });
+  const left = () => raw.prepare('SELECT device_id FROM sync_ops ORDER BY seq').all().map((r: any) => r.device_id);
+
+  it("drops this device's ops in flight, and needs no subscription to do it", async () => {
     await push(tokenP1, 'phone', [op('phone:1')]);
     raw.prepare('UPDATE profiles SET is_plus = 0 WHERE id = ?').run('p1');
-    const res = await call(env, 'DELETE', '/v1/sync', { token: tokenP1 });
+    const res = await off();
     expect(res.status).toBe(200);
-    expect(raw.prepare('SELECT COUNT(*) AS n FROM sync_ops').get()).toEqual({ n: 0 });
+    expect(left()).toEqual([]);
+  });
+
+  it("never takes another device's changes with it", async () => {
+    // The bug: the tablet switching off deleted the phone's unpulled ops too.
+    await push(tokenP1, 'phone', [op('phone:1')]);
+    await push(tokenP1, 'tablet', [op('tablet:1')]);
+    await off({ 'X-OpenTV-Device': 'tablet' });
+    expect(left()).toEqual(['phone']);
+  });
+
+  it('deletes nothing for a client that does not say which device it is', async () => {
+    await push(tokenP1, 'phone', [op('phone:1')]);
+    expect((await off({})).status).toBe(200);
+    expect(left()).toEqual(['phone']);
   });
 });

@@ -59,13 +59,13 @@ describe('registering', () => {
     expect(rowFor('tablet')).toBeDefined();
   });
 
-  it('writes last_seen at most once a day, however often the phone polls', async () => {
+  it('writes last_seen at most once an hour, however often the phone polls', async () => {
     await sync('phone');
     const first = rowFor('phone')!.last_seen;
     await sync('phone');
     await sync('phone', { name: 'renamed' });
     expect(rowFor('phone')!.last_seen).toBe(first);
-    // And the rename waits for the daily write with it.
+    // And the rename waits for the hourly write with it.
     expect(rowFor('phone')!.name).toBeNull();
 
     raw.prepare("UPDATE devices SET last_seen = '2026-10-09T23:59:59.000Z' WHERE device = 'phone'").run();
@@ -76,7 +76,18 @@ describe('registering', () => {
     expect(row.platform).toBe('ios');
   });
 
-  it('keeps a name the daily write did not bring', async () => {
+  it('moves last_seen later the SAME day, once the stamp is an hour old', async () => {
+    // The bug: compared against today's date, a stamp from this morning never
+    // sorted below it, so last_seen stood at first_seen until midnight.
+    await sync('phone');
+    const earlier = new Date(Date.now() - 61 * 60 * 1000).toISOString();
+    raw.prepare('UPDATE devices SET last_seen = ? WHERE device = ?').run(earlier, 'phone');
+    await sync('phone');
+    expect(rowFor('phone')!.last_seen > earlier).toBe(true);
+    expect(rowFor('phone')!.last_seen > rowFor('phone')!.first_seen).toBe(true);
+  });
+
+  it('keeps a name the hourly write did not bring', async () => {
     await sync('phone', { name: 'Pixel 8', platform: 'android' });
     raw.prepare("UPDATE devices SET last_seen = '2026-01-01T00:00:00.000Z' WHERE device = 'phone'").run();
     await sync('phone');
