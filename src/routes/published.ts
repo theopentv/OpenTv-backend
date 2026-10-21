@@ -329,13 +329,15 @@ published.put('/me/published', requireAuth, async (c) => {
         ),
     ),
   ];
-  await db.batch(statements);
+  // D1 throws "No SQL statements detected" on an empty batch -- an appended
+  // chunk with no rows, or an empty shelf below (a 500, 21 Oct).
+  if (statements.length > 0) await db.batch(statements);
 
   // FIRST SEEN: a title new to this shelf is stamped now; one already known
   // keeps its date (OR IGNORE). What the dashboard's Today column reads to say
   // "added Severance" — names the owner already made public, nothing more.
   const seenAt = new Date().toISOString();
-  await db.batch(
+  if (rows.length > 0) await db.batch(
     // 25 rows × 4 values = 100, D1's ceiling for bound parameters.
     chunk(rows, 25).map((group) =>
       db

@@ -82,6 +82,9 @@ export function d1(db: Database.Database): D1Database {
   const api = {
     prepare: (sql: string) => prepare(sql),
     async batch(stmts: D1PreparedStatement[]) {
+      // AS D1 DOES. Real D1 throws on an empty batch; a shim that shrugged hid
+      // a 500 on `PUT /v1/me/published` with no rows (21 Oct).
+      if (stmts.length === 0) throw new Error('D1_ERROR: No SQL statements detected.');
       const out: unknown[] = [];
       for (const s of stmts) out.push(await (s as unknown as { batchRun(): Promise<unknown> }).batchRun());
       return out;

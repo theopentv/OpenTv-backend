@@ -289,6 +289,21 @@ describe('a shelf sent in chunks', () => {
     expect(n.n).toBe(3);
   });
 
+  /* D1 throws on an empty batch: these were 500s, 21 Oct. */
+  it('accepts an empty shelf, and an empty appended chunk', async () => {
+    plus();
+    await call(env, 'PUT', '/v1/me/published', { token, body: { kind: 'show', titles: [title(1)] } });
+    const cleared = await call(env, 'PUT', '/v1/me/published', { token, body: { kind: 'show', titles: [] } });
+    expect(cleared.status).toBe(200);
+    const appended = await call(env, 'PUT', '/v1/me/published', {
+      token,
+      body: { kind: 'show', append: true, titles: [] },
+    });
+    expect(appended.status).toBe(200);
+    const n = raw.prepare(`SELECT COUNT(*) AS n FROM profile_titles WHERE profile_id = 'p1'`).get() as { n: number };
+    expect(n.n).toBe(0);
+  });
+
   /* The first chunk still REPLACES, or an old shelf would never shrink. */
   it('clears the shelf on the chunk that does not append', async () => {
     plus();
