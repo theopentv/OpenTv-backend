@@ -765,6 +765,17 @@ auth.delete('/me', async (c) => {
     // email sign-in, and it holds the password hash besides.
     db.prepare('DELETE FROM email_credentials WHERE profile_id = ?').bind(me),
     db.prepare('DELETE FROM comment_likes WHERE user_id = ?').bind(me),
+    // Somebody else's IMPORTED replies that the archive attached to this
+    // person's comments go back to waiting for their original, rather than
+    // following them out through `ON DELETE CASCADE`: they are that other
+    // person's own history, not a conversation this account started.
+    db
+      .prepare(
+        `UPDATE comments SET parent_id = NULL
+          WHERE tvtime_parent_id IS NOT NULL AND author_id <> ?
+            AND parent_id IN (SELECT id FROM comments WHERE author_id = ?)`,
+      )
+      .bind(me, me),
     db.prepare('DELETE FROM comments WHERE author_id = ?').bind(me),
     db.prepare('DELETE FROM ratings WHERE author_id = ?').bind(me),
     db.prepare('DELETE FROM follows WHERE follower_id = ? OR followee_id = ?').bind(me, me),

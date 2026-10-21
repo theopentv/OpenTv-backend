@@ -91,7 +91,7 @@ export async function readProfile(env: Env, handle: string, viewer: string): Pro
             (SELECT COUNT(*) FROM follows f WHERE f.follower_id = p.id AND f.state = 'accepted') AS following,
             (SELECT COUNT(*) FROM comments c
               WHERE c.author_id = p.id AND c.deleted_at IS NULL AND c.hidden_at IS NULL
-                AND c.parent_id IS NULL) AS comments,
+                AND c.parent_id IS NULL AND c.tvtime_parent_id IS NULL) AS comments,
             (SELECT COUNT(*) FROM lists l WHERE l.owner_id = p.id AND l.is_public = 1)
               + (SELECT COUNT(*) FROM shared_list_members m
                    JOIN shared_lists sl ON sl.id = m.list_id
@@ -484,6 +484,9 @@ profiles.get('/profiles/:handle/comments', async (c) => {
     'c.deleted_at IS NULL',
     'c.hidden_at IS NULL',
     'c.parent_id IS NULL',
+    // An imported reply whose original is not here is still a reply, and the
+    // owner's own tab (`type != 'reply'`) has never listed one.
+    'c.tvtime_parent_id IS NULL',
     'p.deleted_at IS NULL',
   ];
   const binds: (string | number)[] = [row.id];

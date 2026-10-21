@@ -10,6 +10,7 @@ import {
   importedCommentBodyOk,
   stableImportId,
   stableRatingId,
+  tvtimeCommentId,
   validateCommentBody,
   validateVote,
   VOTE_IMPORT_MAX_ITEMS,
@@ -51,7 +52,22 @@ type Prepared = {
   isSpoiler: number;
   lang: string | null;
   createdAt: string;
+  /** TV Time's own id for this comment, and for the one it answered — see 0062. */
+  tvtimeId: string | null;
+  tvtimeParentId: string | null;
 };
+
+/**
+ * The comment a TV Time parent id names, ON THE SAME THREAD, as the root a reply
+ * may hang off: replies are one level deep, so a reply to a reply hangs off the
+ * reply's own parent. Binds the parent's tvtime id unless given an expression. The `r` alias is the row
+ * being given a parent. A deleted parent is still a parent — the reply follows
+ * it out of the thread exactly as a live reply does, and back if it returns.
+ */
+const PARENT_OF = (r: string, tvtimeId = '?') => `(SELECT COALESCE(p.parent_id, p.id) FROM comments p
+   WHERE p.tvtime_id = ${tvtimeId} AND p.target_source = ${r}.target_source AND p.target_key = ${r}.target_key
+     AND p.season IS ${r}.season AND p.episode IS ${r}.episode AND p.id <> ${r}.id
+   ORDER BY p.deleted_at IS NOT NULL LIMIT 1)`;
 
 seeding.post('/comments/import', requireAuth, async (c) => {
   let body: unknown;
@@ -128,14 +144,19 @@ seeding.post('/comments/import', requireAuth, async (c) => {
       isSpoiler: it.is_spoiler === true || it.is_spoiler === 1 ? 1 : 0,
       lang: isValidBcp47(it.lang) ? it.lang : null,
       createdAt,
+      tvtimeId: tvtimeCommentId(it.tvtime_id),
+      tvtimeParentId: tvtimeCommentId(it.tvtime_parent_id),
     });
   }
 
   let imported = 0;
   for (let i = 0; i < prepared.length; i += BATCH_CHUNK) {
     const chunk = prepared.slice(i, i + BATCH_CHUNK);
-    const results = await db.batch(
-      chunk.map((p) =>
+    const statements: D1PreparedStatement[] = [];
+    const insertAt: number[] = [];
+    for (const p of chunk) {
+      insertAt.push(statements.length);
+      statements.push(
         db
           .prepare(
             /*
@@ -149,8 +170,13 @@ seeding.post('/comments/import', requireAuth, async (c) => {
              */
             `INSERT OR IGNORE INTO comments
                (id, author_id, target_source, target_key, season, episode, body, is_spoiler, lang,
-                parent_id, imported_at, created_at)
-             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?
+                parent_id, imported_at, created_at, tvtime_id, tvtime_parent_id)
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    (SELECT COALESCE(p.parent_id, p.id) FROM comments p
+                      WHERE p.tvtime_id = ? AND p.target_source = ? AND p.target_key = ?
+                        AND p.season IS ? AND p.episode IS ?
+                      ORDER BY p.deleted_at IS NOT NULL LIMIT 1),
+                    ?, ?, ?, ?
               WHERE NOT EXISTS (
                 SELECT 1 FROM comments o
                  WHERE o.author_id = ? AND o.target_source = ? AND o.target_key = ?
@@ -168,8 +194,15 @@ seeding.post('/comments/import', requireAuth, async (c) => {
             p.body,
             p.isSpoiler,
             p.lang,
+            p.tvtimeParentId,
+            p.source,
+            p.key,
+            p.season,
+            p.episode,
             nowIso,
             p.createdAt,
+            p.tvtimeId,
+            p.tvtimeParentId,
             me,
             p.source,
             p.key,
@@ -178,9 +211,56 @@ seeding.post('/comments/import', requireAuth, async (c) => {
             p.body,
             p.createdAt,
           ),
-      ),
-    );
-    imported += results.reduce((n, r) => n + (r.meta?.changes ?? 0), 0);
+      );
+      /*
+       * THE BACKFILL. A row seeded before 0062 has the same derived id and so
+       * was skipped by the insert above; this gives it the TV Time ids once
+       * (`tvtime_id IS NULL`), and a parent if that is already here. Not
+       * counted as imported — the comment was already on the server.
+       */
+      if (p.tvtimeId || p.tvtimeParentId) {
+        statements.push(
+          db
+            .prepare(
+              `UPDATE comments AS r SET tvtime_id = ?, tvtime_parent_id = ?,
+                      parent_id = COALESCE(r.parent_id, ${PARENT_OF('r')})
+                WHERE r.id = ? AND r.author_id = ? AND r.tvtime_id IS NULL`,
+            )
+            .bind(p.tvtimeId, p.tvtimeParentId, p.tvtimeParentId, p.id, me),
+        );
+      }
+    }
+
+    const ids = JSON.stringify(chunk.map((p) => p.tvtimeId).filter((v): v is string => v !== null));
+    if (ids !== '[]') {
+      // ADOPT: replies already here — usually somebody else's — that were
+      // waiting for one of the comments this chunk just brought.
+      statements.push(
+        db
+          .prepare(
+            `UPDATE comments AS r SET parent_id = ${PARENT_OF('r', 'r.tvtime_parent_id')}
+              WHERE r.parent_id IS NULL AND r.tvtime_parent_id IN (SELECT value FROM json_each(?))`,
+          )
+          .bind(ids),
+      );
+      // ONE LEVEL DEEP, still. A comment that had replies of its own while it
+      // was an orphan, and has just become a reply itself, hands them to its
+      // new parent — otherwise they would point at a reply, which no read shows.
+      statements.push(
+        db
+          .prepare(
+            `UPDATE comments AS c SET parent_id = (SELECT x.parent_id FROM comments x WHERE x.id = c.parent_id)
+              WHERE c.parent_id IN (SELECT r.id FROM comments r
+                                     WHERE r.parent_id IS NOT NULL
+                                       AND (r.tvtime_id IN (SELECT value FROM json_each(?))
+                                            OR r.tvtime_parent_id IN (SELECT value FROM json_each(?))))`,
+          )
+          .bind(ids, ids),
+      );
+    }
+
+    const results = await db.batch(statements);
+    for (const n of insertAt) imported += results[n]?.meta?.changes ?? 0;
   }
 
   return c.json({ imported, skipped: items.length - imported });

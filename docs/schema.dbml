@@ -144,6 +144,8 @@ Table comments {
   parent_id     text [ref: > comments.id, note: 'one level of replies only']
 
   imported_at   text [note: 'set when seeded from the author own export']
+  tvtime_id        text [note: 'TV Time own id for an imported comment, e:<legacy id> or c:<uuid> (0062)']
+  tvtime_parent_id text [note: 'TV Time id of the comment it answered; parent_id once that one is here (0062)']
   like_count    integer [default: 0, note: '[job] reconciled — see counter_repair']
   report_count  integer [default: 0, note: 'auto-hides past a threshold, before a human reads the queue']
 

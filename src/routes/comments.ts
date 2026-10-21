@@ -74,6 +74,7 @@ export type CommentRow = {
   image_gif?: number | null;
   image_ok?: number | null;
   image_scan?: string | null;
+  orphan_reply?: number;
 };
 
 /** One shaper for POST and GET, so the row the author sees is the row the thread shows. */
@@ -137,6 +138,14 @@ export function shapeComment(row: CommentRow, viewerId = '') {
     image_pending: row.image_scan === 'pending' && !!viewerId && row.author_id === viewerId,
     /** Also on CommsUni — so the thread can stop calling it "OpenTV only". */
     shared: !!row.commsuni_id,
+    /**
+     * A TV Time REPLY whose original is not on this server (yet). It stands at
+     * the top of the thread because there is nothing to hang it under, and the
+     * app says what it is rather than letting it read as a stray post. It stops
+     * being one the moment the original's author imports — see the adopt step
+     * in routes/import.ts.
+     */
+    orphan_reply: !!row.orphan_reply,
   };
 }
 
@@ -144,6 +153,7 @@ export function shapeComment(row: CommentRow, viewerId = '') {
 export const COMMENT_COLUMNS = `c.id, c.author_id, c.target_source, c.target_key, c.season, c.episode,
        c.body, c.is_spoiler, c.lang, c.parent_id, c.imported_at, c.like_count,
        c.created_at, c.edited_at, c.commsuni_id,
+       (c.parent_id IS NULL AND c.tvtime_parent_id IS NOT NULL) AS orphan_reply,
        p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until,
        ci.width AS image_w, ci.height AS image_h, ci.is_gif AS image_gif,
        (ci.scan_status = 'clean') AS image_ok,

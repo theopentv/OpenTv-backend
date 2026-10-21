@@ -836,6 +836,16 @@ export function importedCommentBodyOk(input: unknown, hasImage: boolean) {
 }
 
 /**
+ * A TV Time comment id as the app sends it: `e:<number>` from the legacy
+ * `episode_comment.csv`, `c:<uuid>` from `comments-prod-comments.csv`. The
+ * prefix keeps the two id spaces from ever naming each other's rows. Anything
+ * else is dropped to null — a bad link costs the thread shape, never the comment.
+ */
+export function tvtimeCommentId(v: unknown): string | null {
+  return typeof v === 'string' && /^(?:e:\d{1,20}|c:[0-9A-Za-z-]{1,64})$/.test(v) ? v : null;
+}
+
+/**
  * Replies are one level deep (docs/PLAN.md §3 — "deeper threading is a
  * moderation problem wearing a feature costume"). A reply to a reply is
  * refused, never silently re-parented: the client that sent it is wrong and
