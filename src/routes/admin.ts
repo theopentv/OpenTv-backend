@@ -1440,14 +1440,21 @@ admin.get('/admin/trends', async (c) => {
     // counted for people in profile_days that day, so it never exceeds `opened`.
     db.prepare(
       `SELECT day, COUNT(*) AS n FROM (
+         -- Two groups of three: D1 refuses a compound SELECT of more than
+         -- five terms ("too many terms in compound SELECT").
          SELECT DISTINCT substr(at, 1, 10) AS day, who FROM (
-           SELECT author_id AS who, created_at AS at FROM comments
-            WHERE deleted_at IS NULL AND imported_at IS NULL AND created_at >= ?
-           UNION ALL SELECT author_id, created_at FROM ratings WHERE imported_at IS NULL AND created_at >= ?
-           UNION ALL SELECT voter_id, created_at FROM character_votes WHERE imported_at IS NULL AND created_at >= ?
-           UNION ALL SELECT author_id, created_at FROM emotion_votes WHERE imported_at IS NULL AND created_at >= ?
-           UNION ALL SELECT profile_id, first_seen_at FROM shelf_seen WHERE first_seen_at >= ?
-           UNION ALL SELECT profile_id, created_at FROM sync_ops WHERE created_at >= ?
+           SELECT who, at FROM (
+             SELECT author_id AS who, created_at AS at FROM comments
+              WHERE deleted_at IS NULL AND imported_at IS NULL AND created_at >= ?
+             UNION ALL SELECT author_id, created_at FROM ratings WHERE imported_at IS NULL AND created_at >= ?
+             UNION ALL SELECT voter_id, created_at FROM character_votes WHERE imported_at IS NULL AND created_at >= ?
+           )
+           UNION ALL
+           SELECT who, at FROM (
+             SELECT author_id AS who, created_at AS at FROM emotion_votes WHERE imported_at IS NULL AND created_at >= ?
+             UNION ALL SELECT profile_id, first_seen_at FROM shelf_seen WHERE first_seen_at >= ?
+             UNION ALL SELECT profile_id, created_at FROM sync_ops WHERE created_at >= ?
+           )
          )
        ) x
        WHERE EXISTS (SELECT 1 FROM profile_days d WHERE d.profile_id = x.who AND d.day = x.day)
