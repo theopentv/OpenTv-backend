@@ -1383,7 +1383,7 @@ admin.get('/admin/trends', async (c) => {
   // counts, never who.
   type Row = { day: string; n: number; p?: number; apple?: number; google?: number };
   const db = c.env.DB;
-  const [joins, opened, comments, ratings, deletes, plus, returned, syncs, backups] = await Promise.all([
+  const [joins, opened, comments, ratings, deletes, plus, returned, syncs, backups, acted] = await Promise.all([
     db.prepare(
       `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n,
               SUM(EXISTS (SELECT 1 FROM identities i WHERE i.profile_id = pr.id AND i.provider = 'apple')) AS apple,
@@ -1434,6 +1434,25 @@ admin.get('/admin/trends', async (c) => {
         WHERE created_at >= ? GROUP BY day`,
     ).bind(since).all<Row>(),
     db.prepare('SELECT day, COUNT(*) AS n FROM backup_days WHERE day >= ? GROUP BY day').bind(since).all<Row>(),
+    // Of the members who opened the app on a day, how many DID something that
+    // day: wrote, rated, voted, put a title on their shelf, or synced a change
+    // (the same writes as the people list's "Did something", plus sync). Only
+    // counted for people in profile_days that day, so it never exceeds `opened`.
+    db.prepare(
+      `SELECT day, COUNT(*) AS n FROM (
+         SELECT DISTINCT substr(at, 1, 10) AS day, who FROM (
+           SELECT author_id AS who, created_at AS at FROM comments
+            WHERE deleted_at IS NULL AND imported_at IS NULL AND created_at >= ?
+           UNION ALL SELECT author_id, created_at FROM ratings WHERE imported_at IS NULL AND created_at >= ?
+           UNION ALL SELECT voter_id, created_at FROM character_votes WHERE imported_at IS NULL AND created_at >= ?
+           UNION ALL SELECT author_id, created_at FROM emotion_votes WHERE imported_at IS NULL AND created_at >= ?
+           UNION ALL SELECT profile_id, first_seen_at FROM shelf_seen WHERE first_seen_at >= ?
+           UNION ALL SELECT profile_id, created_at FROM sync_ops WHERE created_at >= ?
+         )
+       ) x
+       WHERE EXISTS (SELECT 1 FROM profile_days d WHERE d.profile_id = x.who AND d.day = x.day)
+       GROUP BY day`,
+    ).bind(since, since, since, since, since, since).all<Row>(),
   ]);
   // A day's next-day return is only known once that next day is over, so the
   // last two days are left out rather than drawn as zero.
@@ -1456,7 +1475,11 @@ admin.get('/admin/trends', async (c) => {
       openedSince: first?.d ?? null,
       series: {
         joins: joins.results ?? [],
-        opened: opened.results ?? [],
+        // `a` = how many of that day's openers did something (see `acted`).
+        opened: (opened.results ?? []).map((r) => {
+          const a = (acted.results ?? []).find((x) => x.day === r.day)?.n ?? 0;
+          return { ...r, a: Math.min(a, r.n) };
+        }),
         comments: comments.results ?? [],
         ratings: ratings.results ?? [],
         deletes: deletes.results ?? [],

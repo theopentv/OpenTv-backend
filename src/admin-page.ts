@@ -799,10 +799,13 @@ const TRENDS = [
 const STACKS = {
   method: [['apple', 'Apple', '#e9e9ee'], ['google', 'Google', '#4c8bf5'], ['email', 'Email', '#ffd400']],
   usage: [['b', 'backed up', '#78be3d'], ['s', 'synced', '#ffd400']],
+  // Inside the bar of everyone who opened the app: the part who also did something.
+  opened: [['a', 'did something', '#78be3d'], ['rest', 'only opened', '#ffd400']],
 };
 function partOf(key, row, field) {
   if (!row) return 0;
   if (key === 'method' && field === 'email') return Math.max(0, row.n - (row.apple || 0) - (row.google || 0));
+  if (key === 'opened' && field === 'rest') return Math.max(0, row.n - (row.a || 0));
   return row[field] || 0;
 }
 function dayList(end, n) {
@@ -903,6 +906,8 @@ function tipFor(key, day, n, row, avg, isToday) {
     detail = row.d1 + ' of ' + row.joined + ' joined that day came back the next day · ' + row.d7 + ' within 7 days';
   } else if (key === 'usage' && row) {
     detail = row.b + ' backed up · ' + row.s + ' synced';
+  } else if (key === 'opened' && n && row) {
+    detail = (row.a || 0) + ' did something (wrote, rated, voted, shelved or synced) · ' + Math.round((100 * (row.a || 0)) / n) + '%';
   } else if ((key === 'joins' || key === 'method') && n && row) {
     const other = n - (row.apple || 0) - (row.google || 0);
     detail = [['Apple', row.apple], ['Google', row.google], ['Email', other]].filter(([, v]) => v > 0).map(([k, v]) => v + ' ' + k).join(' · ');
