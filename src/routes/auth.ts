@@ -53,7 +53,6 @@ type ProfileRow = {
   created_at: string;
   deleted_at: string | null;
   free_month_at?: string | null;
-  free_month_via?: string | null;
 };
 
 function parseLinks(raw: string | null): unknown {
@@ -382,13 +381,11 @@ auth.get('/me', async (c) => {
     ...(renewed ? { session: { token: renewed.token, expires_at: renewed.expiresAt } } : {}),
     unread_notifications: row.unread,
     needs_handle: needsHandle(row.handle),
-    // THE FREE MONTH (2.0.3). Whether the app may claim one at all — the
-    // dashboard's switch — and how this account's month arrived, so a month
-    // the dashboard GAVE (`free_month_via: 'gift'`) can be announced once on
-    // the phone that never asked for it. Older apps ignore all three.
+    // THE FREE MONTH (2.0.3). Whether the app may invite anybody at all — the
+    // dashboard's switch — and whether this account has had its month, so a
+    // signed-in phone stops showing the invitation. Older apps ignore both.
     free_month_open: await freeMonthOpen(c.env),
     free_month_at: row.free_month_at ?? null,
-    free_month_via: row.free_month_via ?? null,
     // THE DATABASE'S ANSWER, not the token's. `requireVerified` reads the scope
     // baked into the session, which cannot change after it is issued — so an
     // account confirmed (or un-confirmed) since sign-in would otherwise never
