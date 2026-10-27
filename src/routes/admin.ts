@@ -5,6 +5,7 @@ import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { COMMSUNI_OFF_KEY } from '@/routes/commsuni';
+import { FREE_MONTH_OPEN_KEY, freeMonthOpen, freeMonthUntil, subjectHash } from '@/routes/free-month';
 import {
   constantTimeEqual,
   imageExtension,
@@ -316,6 +317,171 @@ admin.post('/admin/commsuni', async (c) => {
   if (body.on) await c.env.CACHE.delete(COMMSUNI_OFF_KEY);
   else await c.env.CACHE.put(COMMSUNI_OFF_KEY, '1');
   return c.json({ on: body.on }, 200, { 'Cache-Control': 'no-store' });
+});
+
+// ── The free month (2.0.3) ───────────────────────────────────────────────────
+
+/**
+ * WHO "GIVE EVERYONE A MONTH" REACHES, as one WHERE so the count the button
+ * shows first and the grant it then makes cannot disagree. Not deleted, not
+ * paying (their time is the store's — see free-month.ts), never had a month,
+ * and not an email address nobody has confirmed: the claim route refuses
+ * those too, because a month for an unproved address is a month for anybody.
+ * Nor Google's test robots, which are not people. `p` is the profiles alias.
+ */
+const GIFTABLE = `p.deleted_at IS NULL AND p.is_plus != 1 AND p.free_month_at IS NULL
+  AND NOT EXISTS (SELECT 1 FROM email_credentials c WHERE c.profile_id = p.id AND c.verified_at IS NULL)
+  AND NOT ${robotSql('p')}`;
+
+/**
+ * Profiles per request. D1 binds at most 100 parameters to one statement, and
+ * the identities read below binds one per profile.
+ */
+const GIFT_PAGE = 80;
+
+/** Everything the dashboard's Free month panel shows, from three reads. */
+admin.get('/admin/free-month', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const db = c.env.DB;
+  const since = new Date(Date.now() - 6 * 86_400_000).toISOString().slice(0, 10);
+  const [totals, days, heard] = await db.batch([
+    /*
+     * "BECAME PAYING" IS A PROXY, and an honest one: `is_plus` is the webhook's
+     * flag and a payer can never claim or be given a month, so anybody who has
+     * both bought after their month started. Deleted accounts are left out of
+     * every figure here, the same as the People panel.
+     */
+    db.prepare(
+      `SELECT SUM(p.free_month_at IS NOT NULL AND p.free_month_via IS NULL) AS claimed,
+              SUM(p.free_month_via = 'gift') AS gifted,
+              SUM(p.free_month_at IS NOT NULL AND p.is_plus = 1) AS paying,
+              SUM(${GIFTABLE}) AS giftable
+         FROM profiles p WHERE p.deleted_at IS NULL`,
+    ),
+    db.prepare(
+      `SELECT substr(free_month_at, 1, 10) AS day, COUNT(*) AS n FROM profiles
+        WHERE deleted_at IS NULL AND free_month_via IS NULL AND free_month_at >= ? GROUP BY day ORDER BY day`,
+    ).bind(since),
+    db.prepare(
+      `SELECT heard_from, COUNT(*) AS n FROM profiles
+        WHERE deleted_at IS NULL AND heard_from IS NOT NULL GROUP BY heard_from ORDER BY n DESC`,
+    ),
+  ]);
+  const t = (totals?.results[0] ?? {}) as Record<string, number | null>;
+  return c.json(
+    {
+      open: await freeMonthOpen(c.env),
+      claimed: t.claimed ?? 0,
+      gifted: t.gifted ?? 0,
+      paying: t.paying ?? 0,
+      giftable: t.giftable ?? 0,
+      days: days?.results ?? [],
+      heard_from: heard?.results ?? [],
+    },
+    200,
+    { 'Cache-Control': 'no-store' },
+  );
+});
+
+admin.post('/admin/free-month/open', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { open?: unknown };
+  if (typeof body.open !== 'boolean') return fail(c, 400, 'invalid_body', 'open must be true or false');
+  if (body.open) await c.env.CACHE.put(FREE_MONTH_OPEN_KEY, '1');
+  else await c.env.CACHE.delete(FREE_MONTH_OPEN_KEY);
+  return c.json({ open: body.open }, 200, { 'Cache-Control': 'no-store' });
+});
+
+/**
+ * POST /v1/admin/free-month/grant — "Give everyone a month", ONE PAGE AT A TIME.
+ *
+ * Body `{ after? }`: the last profile id of the page before. Answers
+ * `{ granted, skipped, next }`; the dashboard calls again with `next` until it
+ * is null. Paged because one Worker request has a ceiling on D1 queries and
+ * thousands of accounts would pass it, and paged BY ID rather than by "who is
+ * still giftable" because a skipped account stays giftable in SQL and would
+ * otherwise come back on every page for ever.
+ *
+ * IDEMPOTENT. The UPDATE repeats `free_month_at IS NULL`, so pressing the
+ * button twice — or two tabs at once — grants each account once; the second
+ * run finds nothing to do.
+ *
+ * THE SAME MONTH AS THE CLAIM: thirty days onto the end of anything still
+ * running (`freeMonthUntil`), and every sign-in on the account is written to
+ * `free_month_claims`, so deleting the account and signing in again does not
+ * claim a second one. An account whose sign-in already had its month on a
+ * deleted profile is SKIPPED here exactly as the claim would refuse it.
+ */
+admin.post('/admin/free-month/grant', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const body = (await c.req.json().catch(() => ({}))) as { after?: unknown };
+  const after = typeof body.after === 'string' ? body.after : '';
+  const db = c.env.DB;
+
+  const page = await db
+    .prepare(`SELECT p.id, p.plus_until FROM profiles p WHERE p.id > ? AND ${GIFTABLE} ORDER BY p.id LIMIT ?`)
+    .bind(after, GIFT_PAGE)
+    .all<{ id: string; plus_until: string | null }>();
+  const rows = page.results ?? [];
+  if (rows.length === 0) return c.json({ granted: 0, skipped: 0, next: null }, 200, { 'Cache-Control': 'no-store' });
+
+  const ids = await db
+    .prepare(`SELECT profile_id, provider, external_id FROM identities WHERE profile_id IN (${rows.map(() => '?').join(',')})`)
+    .bind(...rows.map((r) => r.id))
+    .all<{ profile_id: string; provider: string; external_id: string }>();
+  const hashesOf = new Map<string, string[]>();
+  for (const i of ids.results ?? []) {
+    const list = hashesOf.get(i.profile_id) ?? [];
+    list.push(await subjectHash(c.env, i.provider, i.external_id));
+    hashesOf.set(i.profile_id, list);
+  }
+  const all = [...hashesOf.values()].flat();
+  const seen = new Set<string>();
+  for (let i = 0; i < all.length; i += 90) {
+    const chunk = all.slice(i, i + 90);
+    const hit = await db
+      .prepare(`SELECT subject_hash FROM free_month_claims WHERE subject_hash IN (${chunk.map(() => '?').join(',')})`)
+      .bind(...chunk)
+      .all<{ subject_hash: string }>();
+    for (const h of hit.results ?? []) seen.add(h.subject_hash);
+  }
+
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const give = rows.filter((r) => !(hashesOf.get(r.id) ?? []).some((h) => seen.has(h)));
+  const results = give.length
+    ? await db.batch([
+        ...give.map((r) =>
+          db
+            .prepare(
+              `UPDATE profiles SET plus_until = ?, free_month_at = ?, free_month_via = 'gift'
+                WHERE id = ? AND free_month_at IS NULL AND is_plus != 1 AND deleted_at IS NULL`,
+            )
+            .bind(freeMonthUntil(r.plus_until, nowMs), nowIso, r.id),
+        ),
+        ...give.flatMap((r) =>
+          (hashesOf.get(r.id) ?? []).map((h) =>
+            db.prepare('INSERT OR IGNORE INTO free_month_claims (subject_hash, claimed_at) VALUES (?, ?)').bind(h, nowIso),
+          ),
+        ),
+      ])
+    : [];
+  const granted = results.slice(0, give.length).reduce((n, r) => n + (r.meta.changes ? 1 : 0), 0);
+  return c.json(
+    {
+      granted,
+      skipped: rows.length - granted,
+      next: rows.length < GIFT_PAGE ? null : rows[rows.length - 1]!.id,
+    },
+    200,
+    { 'Cache-Control': 'no-store' },
+  );
 });
 
 // The seasonal event — see EVENT_KEY in links.ts. One at a time, or none.
