@@ -70,6 +70,17 @@ describe('POST /v1/me/free-month', () => {
     expect(Date.parse(until(raw)!)).toBe(Date.parse(later) + 30 * DAY);
   });
 
+  it('is open to somebody whose earlier gifted Plus has ended', async () => {
+    const { raw, env } = await seed();
+    // A hand gift from the dashboard's "Give Plus", long over: never a free month.
+    raw.prepare("UPDATE profiles SET plus_until = '2026-03-01T00:00:00.000Z' WHERE id = 'p_me'").run();
+    const token = await tokenFor(env, 'p_me');
+    expect((await call(env, 'GET', '/v1/me', { token })).json).toMatchObject({ is_plus: false, free_month_at: null });
+    const res = await call(env, 'POST', '/v1/me/free-month', { token });
+    expect(res.json.granted).toBe(true);
+    expect(Date.parse(until(raw)!)).toBeGreaterThan(Date.now() + 29 * DAY);
+  });
+
   it('leaves a paying subscriber alone, without spending their claim', async () => {
     const { raw, env } = await seed();
     raw.prepare('UPDATE profiles SET is_plus = 1 WHERE id = ?').run('p_me');
@@ -139,15 +150,16 @@ describe('PATCH /v1/me heard_from', () => {
 });
 
 describe('GET /v1/me free month fields', () => {
-  it('says whether the offer is open, and how this month arrived', async () => {
+  it('says whether the offer is open, and whether this account had its month', async () => {
     const { raw, env } = await seed(false);
     const token = await tokenFor(env, 'p_me');
     let me = await call(env, 'GET', '/v1/me', { token });
-    expect(me.json).toMatchObject({ free_month_open: false, free_month_at: null, free_month_via: null });
+    expect(me.json).toMatchObject({ free_month_open: false, free_month_at: null });
+    expect(me.json.free_month_via).toBeUndefined();
     await env.CACHE.put(FREE_MONTH_OPEN_KEY, '1');
-    raw.prepare("UPDATE profiles SET free_month_at = '2026-10-27T00:00:00.000Z', free_month_via = 'gift' WHERE id = 'p_me'").run();
+    raw.prepare("UPDATE profiles SET free_month_at = '2026-10-27T00:00:00.000Z' WHERE id = 'p_me'").run();
     me = await call(env, 'GET', '/v1/me', { token });
-    expect(me.json).toMatchObject({ free_month_open: true, free_month_at: '2026-10-27T00:00:00.000Z', free_month_via: 'gift' });
+    expect(me.json).toMatchObject({ free_month_open: true, free_month_at: '2026-10-27T00:00:00.000Z' });
   });
 });
 
@@ -190,90 +202,27 @@ describe('dashboard: the free month switch', () => {
   });
 });
 
-describe('dashboard: give everyone a month', () => {
-  it('skips payers, past months, unconfirmed addresses and the deleted; extends a running gift; is idempotent', async () => {
-    const { raw, env, as } = await adminEnv();
-    // p_me (from seed): plain account, gets a month.
-    person(raw, 'p_payer', 'sub-payer');
-    raw.prepare('UPDATE profiles SET is_plus = 1 WHERE id = ?').run('p_payer');
-    person(raw, 'p_had', 'sub-had');
-    raw.prepare("UPDATE profiles SET free_month_at = '2026-10-01T00:00:00.000Z', plus_until = '2026-10-31T00:00:00.000Z' WHERE id = ?").run('p_had');
-    person(raw, 'p_gifted', 'sub-gifted');
-    const later = new Date(Date.now() + 10 * DAY).toISOString();
-    raw.prepare('UPDATE profiles SET plus_until = ? WHERE id = ?').run(later, 'p_gifted');
-    insertProfile(raw, 'p_gone', 'gone', '2026-09-01T00:00:00.000Z');
-    insertProfile(raw, 'p_mail', 'mail');
-    raw
-      .prepare("INSERT INTO email_credentials (profile_id, email, email_lower, password_hash, created_at, updated_at) VALUES ('p_mail', 'a@b.c', 'a@b.c', 'x', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')")
-      .run();
-    // A sign-in that already had its month on a deleted account.
-    person(raw, 'p_back', 'sub-back');
-    const token = await tokenFor(env, 'p_back');
-    await env.CACHE.put(FREE_MONTH_OPEN_KEY, '1');
-    await call(env, 'POST', '/v1/me/free-month', { token });
-    raw.prepare("UPDATE profiles SET free_month_at = NULL, plus_until = NULL WHERE id = 'p_back'").run();
-
-    // The dry run counts what the SQL can see; the deleted-account hash only shows at grant time.
-    expect((await as('GET', '/v1/admin/free-month')).json.giftable).toBe(3);
-    const first = await as('POST', '/v1/admin/free-month/grant', {});
-    expect(first.json).toEqual({ granted: 2, skipped: 1, next: null });
-
-    expect(fmRow(raw, 'p_me')).toMatchObject({ free_month_via: 'gift' });
-    expect(Date.parse(fmRow(raw, 'p_me').plus_until!)).toBeGreaterThan(Date.now() + 29 * DAY);
-    expect(Date.parse(fmRow(raw, 'p_gifted').plus_until!)).toBe(Date.parse(later) + 30 * DAY);
-    expect(fmRow(raw, 'p_payer').free_month_at).toBeNull();
-    expect(fmRow(raw, 'p_had').plus_until).toBe('2026-10-31T00:00:00.000Z');
-    expect(fmRow(raw, 'p_mail').free_month_at).toBeNull();
-    expect(fmRow(raw, 'p_gone').free_month_at).toBeNull();
-    expect(fmRow(raw, 'p_back').free_month_at).toBeNull();
-
-    // Every gifted sign-in is remembered, so a claim after the gift is refused.
-    expect((await call(env, 'POST', '/v1/me/free-month', { token: await tokenFor(env, 'p_me') })).json.reason).toBe('claimed');
-
-    const again = await as('POST', '/v1/admin/free-month/grant', {});
-    expect(again.json.granted).toBe(0);
-    expect(Date.parse(fmRow(raw, 'p_gifted').plus_until!)).toBe(Date.parse(later) + 30 * DAY);
-  });
-
-  it('pages by id, so a long run finishes', async () => {
+describe('dashboard: no bulk gift', () => {
+  it('has no "give everyone a month" route any more: the month is opt-in only', async () => {
     const { raw, as } = await adminEnv();
-    for (let i = 0; i < 170; i++) person(raw, `p_${String(i).padStart(3, '0')}`, `s-${i}`);
-    let after: string | null = null;
-    let granted = 0;
-    let pages = 0;
-    do {
-      const res: { json: { granted: number; next: string | null } } = await as(
-        'POST',
-        '/v1/admin/free-month/grant',
-        after ? { after } : {},
-      );
-      granted += res.json.granted;
-      after = res.json.next;
-      pages++;
-    } while (after);
-    expect(granted).toBe(171);
-    expect(pages).toBe(3);
-  });
-
-  it('refuses without the admin cookie', async () => {
-    const { raw, env } = await adminEnv();
-    expect((await call(env, 'POST', '/v1/admin/free-month/grant', { body: {} })).status).toBe(401);
+    expect((await as('POST', '/v1/admin/free-month/grant', {})).status).toBe(404);
     expect(fmRow(raw, 'p_me').free_month_at).toBeNull();
   });
 });
 
 describe('dashboard: free month stats', () => {
-  it('counts claims by day, gifts, payers after a month, and where people heard of us', async () => {
+  it('counts claims, claims by day, payers after a month, and where people heard of us', async () => {
     const { raw, as } = await adminEnv();
     const today = new Date().toISOString();
     raw.prepare("UPDATE profiles SET free_month_at = ?, heard_from = 'reddit' WHERE id = 'p_me'").run(today);
-    person(raw, 'p_gift', 'sg');
-    raw.prepare("UPDATE profiles SET free_month_at = ?, free_month_via = 'gift', is_plus = 1, heard_from = 'reddit' WHERE id = 'p_gift'").run(today);
+    person(raw, 'p_paid', 'sp');
+    raw.prepare("UPDATE profiles SET free_month_at = ?, is_plus = 1, heard_from = 'reddit' WHERE id = 'p_paid'").run(today);
     person(raw, 'p_old', 'so');
     raw.prepare("UPDATE profiles SET free_month_at = '2026-01-01T00:00:00.000Z', heard_from = 'store' WHERE id = 'p_old'").run();
     const s = (await as('GET', '/v1/admin/free-month')).json;
-    expect(s).toMatchObject({ claimed: 2, gifted: 1, paying: 1, giftable: 0 });
-    expect(s.days).toEqual([{ day: today.slice(0, 10), n: 1 }]);
+    expect(s).toMatchObject({ claimed: 3, paying: 1 });
+    expect(s.gifted).toBeUndefined();
+    expect(s.days).toEqual([{ day: today.slice(0, 10), n: 2 }]);
     expect(s.heard_from).toEqual([
       { heard_from: 'reddit', n: 2 },
       { heard_from: 'store', n: 1 },

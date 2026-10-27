@@ -1,3 +1,9 @@
+-- UNUSED SINCE 27 OCT 2026, kept so the migration history stays linear. It
+-- was written for the dashboard's "Give everyone a month", which was removed
+-- before it was ever deployed (the free month became opt-in only). Nothing
+-- reads or writes the column; dropping it would be a table rebuild in D1 for
+-- a NULL column nobody sees.
+--
 -- HOW THE FREE MONTH ARRIVED (2.0.3). NULL is the month the app claimed after a
 -- sign-in (`POST /v1/me/free-month`); 'gift' is the dashboard's "Give everyone
 -- a month", which reached accounts that existed before 2.0.3 without them

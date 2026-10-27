@@ -76,9 +76,10 @@ deletion because that is its only job. `profiles.heard_from` is the optional
 sign-up question, one of five channel names and never free text.
 The offer is a switch on the dashboard (KV `free-month:open`, absent = off, so
 a fresh deploy or a self-hosted box grants nothing until it is turned on); off,
-the claim answers `closed` and `GET /v1/me` says `free_month_open: false`. The
-dashboard's "Give everyone a month" writes the same month to accounts that
-already exist, marked `free_month_via = 'gift'` so the phone can say so once.
+the claim answers `closed` and `GET /v1/me` says `free_month_open: false`.
+The month is opt-in only: nothing on the dashboard gives it, somebody accepts
+it in the app. (`free_month_via`, migration 0064, is left over from a bulk gift
+that was removed before it was deployed; nothing reads or writes it.)
 
 ## Read before changing anything
 

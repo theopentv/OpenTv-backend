@@ -287,11 +287,10 @@ export const ADMIN_PAGE = `<!doctype html>
     <!-- THE SWITCH IS THE OFFER. Off: the app stops asking and the server
          refuses with 'closed'. A phone with no account cannot hear it (it never
          talks to this server), so its invitation card stays until it signs in. -->
-    <p class="note">Thirty days of Plus once per person, claimed in the app after signing in. "Give everyone a month"
-       reaches accounts that already exist: not paying, never had a month, address confirmed. Pressing it twice gives nothing twice.</p>
+    <p class="note">Thirty days of Plus once per person, only for somebody who accepts the invitation in the app
+       (an account is required). Nothing is ever given from here.</p>
     <div class="acts">
       <button class="ghost" id="fmopen">Free month: …</button>
-      <button class="ghost" id="fmgive">Give everyone a month</button>
     </div>
     <div class="grid" id="fmcards"></div>
     <p class="note" id="fmdays"></p>
@@ -1477,9 +1476,7 @@ async function loadFreeMonth() {
   if (!fm) return;
   cards($('fmcards'), [
     ['Claimed in the app', fm.claimed],
-    ['Given from here', fm.gifted],
     ['Then paid', fm.paying],
-    ['Can still be given', fm.giftable],
   ]);
   $('fmdays').textContent = 'Claims, last 7 days: ' +
     (fm.days.length ? fm.days.map((d) => niceDay(d.day) + ' ' + d.n).join(' · ') : 'none');
@@ -1490,7 +1487,7 @@ $('fmopen').addEventListener('click', async () => {
   if (fm == null) return;
   const next = !fm.open;
   if (!confirm(next
-    ? 'Turn the free month on? Every phone that signs in from now on is given thirty days of Plus once.'
+    ? 'Turn the free month on? The app starts inviting people to try thirty days of Plus once, and gives it to those who accept.'
     : 'Turn the free month off? Phones stop offering it at their next launch and the server refuses every claim. Months already given keep running.')) return;
   await fetch('/v1/admin/free-month/open', {
     method: 'POST',
@@ -1500,40 +1497,6 @@ $('fmopen').addEventListener('click', async () => {
   });
   await loadFreeMonth();
 });
-// One page per request, until the server says there is no next page.
-$('fmgive').addEventListener('click', async () => {
-  await loadFreeMonth();
-  if (fm == null) return;
-  if (!fm.giftable) { alert('Nobody left to give a month to.'); return; }
-  if (!confirm('Give thirty days of Plus to ' + fm.giftable.toLocaleString() + ' accounts? ' +
-      'Each one is added to the end of any Plus they already have, and cannot be taken back from here.')) return;
-  const btn = $('fmgive');
-  btn.disabled = true;
-  let after = null, granted = 0;
-  try {
-    do {
-      const res = await fetch('/v1/admin/free-month/grant', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify(after ? { after } : {}),
-      });
-      if (!res.ok) throw new Error('Stopped after ' + granted + ' (' + res.status + '). Press again to carry on.');
-      const out = await res.json();
-      granted += out.granted;
-      after = out.next;
-      btn.textContent = 'Giving… ' + granted.toLocaleString();
-    } while (after);
-    alert('Given to ' + granted.toLocaleString() + ' accounts.');
-  } catch (err) {
-    alert(String(err.message || err));
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Give everyone a month';
-    await loadFreeMonth();
-  }
-});
-
 let commsuniOn = null;
 function drawCommsuni() {
   $('commsuni').textContent = commsuniOn == null ? 'CommsUni: …' : commsuniOn ? 'CommsUni: on' : 'CommsUni: OFF';
