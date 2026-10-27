@@ -295,6 +295,11 @@ describe('PATCH /v1/me — hidden_sections', () => {
     expect((await call(env, 'GET', '/v1/me', { token: owner })).json.hidden_sections).toEqual([]);
   });
 
+  it('keeps `everything`, the own-profile block (2.0.3), through the PATCH and the echo', async () => {
+    expect((await patch(['everything'])).status).toBe(200);
+    expect((await call(env, 'GET', '/v1/me', { token: owner })).json.hidden_sections).toEqual(['everything']);
+  });
+
   it('clears with null, and with an empty array', async () => {
     await patch(['stats']);
     expect((await patch(null)).json.hidden_sections).toEqual([]);
