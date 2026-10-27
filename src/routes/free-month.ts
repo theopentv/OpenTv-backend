@@ -39,6 +39,19 @@ export const freeMonth = new Hono<App>();
 
 export const FREE_MONTH_DAYS = 30;
 
+/**
+ * THE DASHBOARD'S SWITCH, in KV beside CommsUni's and the event's. '1' means
+ * open; ABSENT MEANS CLOSED, so a fresh deploy (or a self-hosted instance that
+ * never heard of the offer) grants nothing until somebody turns it on. Read by
+ * the claim below and carried to the phone on `GET /v1/me` as
+ * `free_month_open`, which is what stops the app asking at all.
+ */
+export const FREE_MONTH_OPEN_KEY = 'free-month:open';
+
+export async function freeMonthOpen(env: Env): Promise<boolean> {
+  return (await env.CACHE.get(FREE_MONTH_OPEN_KEY)) === '1';
+}
+
 /** The end of the free month: thirty days after whatever Plus is already granted, or after now. */
 export function freeMonthUntil(current: string | null, nowMs: number): string {
   const cur = current ? Date.parse(current) : NaN;
@@ -74,6 +87,9 @@ freeMonth.post('/me/free-month', requireAuth, async (c) => {
   if (!row) return fail(c, 401, 'unauthenticated', 'No such profile.');
 
   const noStore = { 'Cache-Control': 'no-store' };
+  // Before anything else, and without spending the claim: switched back on,
+  // the same person may still take their month.
+  if (!(await freeMonthOpen(c.env))) return c.json({ granted: false, reason: 'closed' }, 200, noStore);
   if (row.free_month_at) return c.json({ granted: false, reason: 'claimed' }, 200, noStore);
   if (row.is_plus === 1) return c.json({ granted: false, reason: 'subscribed' }, 200, noStore);
 

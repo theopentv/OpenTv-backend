@@ -283,6 +283,19 @@ export const ADMIN_PAGE = `<!doctype html>
          so a dialog per row would be thrown away with them. -->
     <dialog id="evdlg"><h3 id="evdlgt"></h3><div id="evdlgb"></div>
       <button class="close" onclick="document.getElementById('evdlg').close()">Close</button></dialog>
+    <h2>Free month</h2>
+    <!-- THE SWITCH IS THE OFFER. Off: the app stops asking and the server
+         refuses with 'closed'. A phone with no account cannot hear it (it never
+         talks to this server), so its invitation card stays until it signs in. -->
+    <p class="note">Thirty days of Plus once per person, claimed in the app after signing in. "Give everyone a month"
+       reaches accounts that already exist: not paying, never had a month, address confirmed. Pressing it twice gives nothing twice.</p>
+    <div class="acts">
+      <button class="ghost" id="fmopen">Free month: …</button>
+      <button class="ghost" id="fmgive">Give everyone a month</button>
+    </div>
+    <div class="grid" id="fmcards"></div>
+    <p class="note" id="fmdays"></p>
+    <p class="note" id="fmheard"></p>
     <h2>Photos</h2>
     <div class="tabs" id="tabs">
       <button class="tab on" data-status="pending">Waiting</button>
@@ -772,6 +785,8 @@ async function load() {
   await loadReview();
 
   await loadTemplates();
+
+  await loadFreeMonth();
 
   // WAS "never what anybody wrote", and the Today column made that untrue: it
   // names the title somebody rated or voted on. Comment TEXT is still never
@@ -1450,6 +1465,72 @@ $('tplform').addEventListener('submit', async (e) => {
     await loadTemplates();
   } finally {
     btn.disabled = false;
+  }
+});
+
+// ── Free month (2.0.3) ──
+let fm = null;
+async function loadFreeMonth() {
+  const res = await fetch('/v1/admin/free-month', { credentials: 'same-origin' });
+  fm = res.ok ? await res.json() : null;
+  $('fmopen').textContent = fm == null ? 'Free month: …' : fm.open ? 'Free month: on' : 'Free month: OFF';
+  if (!fm) return;
+  cards($('fmcards'), [
+    ['Claimed in the app', fm.claimed],
+    ['Given from here', fm.gifted],
+    ['Then paid', fm.paying],
+    ['Can still be given', fm.giftable],
+  ]);
+  $('fmdays').textContent = 'Claims, last 7 days: ' +
+    (fm.days.length ? fm.days.map((d) => niceDay(d.day) + ' ' + d.n).join(' · ') : 'none');
+  $('fmheard').textContent = 'Heard about OpenTV from: ' +
+    (fm.heard_from.length ? fm.heard_from.map((h) => h.heard_from + ' ' + h.n).join(' · ') : 'nobody has answered yet');
+}
+$('fmopen').addEventListener('click', async () => {
+  if (fm == null) return;
+  const next = !fm.open;
+  if (!confirm(next
+    ? 'Turn the free month on? Every phone that signs in from now on is given thirty days of Plus once.'
+    : 'Turn the free month off? Phones stop offering it at their next launch and the server refuses every claim. Months already given keep running.')) return;
+  await fetch('/v1/admin/free-month/open', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify({ open: next }),
+  });
+  await loadFreeMonth();
+});
+// One page per request, until the server says there is no next page.
+$('fmgive').addEventListener('click', async () => {
+  await loadFreeMonth();
+  if (fm == null) return;
+  if (!fm.giftable) { alert('Nobody left to give a month to.'); return; }
+  if (!confirm('Give thirty days of Plus to ' + fm.giftable.toLocaleString() + ' accounts? ' +
+      'Each one is added to the end of any Plus they already have, and cannot be taken back from here.')) return;
+  const btn = $('fmgive');
+  btn.disabled = true;
+  let after = null, granted = 0;
+  try {
+    do {
+      const res = await fetch('/v1/admin/free-month/grant', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(after ? { after } : {}),
+      });
+      if (!res.ok) throw new Error('Stopped after ' + granted + ' (' + res.status + '). Press again to carry on.');
+      const out = await res.json();
+      granted += out.granted;
+      after = out.next;
+      btn.textContent = 'Giving… ' + granted.toLocaleString();
+    } while (after);
+    alert('Given to ' + granted.toLocaleString() + ' accounts.');
+  } catch (err) {
+    alert(String(err.message || err));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Give everyone a month';
+    await loadFreeMonth();
   }
 });
 
