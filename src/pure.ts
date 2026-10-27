@@ -1262,6 +1262,11 @@ export const HIDEABLE_SECTIONS = [
   'stats',
   'activity',
   'lists',
+  // RESERVED like `activity` (2.0.3): "Everything I watch" is an own-profile
+  // block that never publishes, so nothing here enforces it. Listed so the
+  // app's switch survives the PATCH and the /v1/me echo; without it the 400
+  // above refuses the hide and the echo would drop it.
+  'everything',
   'favourite_shows',
   'favourite_movies',
   'shows',
