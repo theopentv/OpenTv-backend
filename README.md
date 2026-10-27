@@ -66,6 +66,15 @@ still paid for. Free profiles publish at most 10 lists and 20 favourites per
 kind, enforced in `routes/published.ts` and grandfathered so a set published
 before Plus existed is never shrunk.
 
+The one other writer is `POST /v1/me/free-month` (2.0.3): every account may
+take thirty days of Plus once, written into `plus_until` like a gift, added to
+the end of any grant still running and refused to a paying subscriber. To stop
+delete-and-sign-in-again, it keeps `free_month_claims`: an HMAC of each
+sign-in's provider subject, so it can answer "has this sign-in had its month?"
+and cannot be turned back into an address or an id. It survives account
+deletion because that is its only job. `profiles.heard_from` is the optional
+sign-up question, one of five channel names and never free text.
+
 ## Read before changing anything
 
 - [`docs/PLAN.md`](docs/PLAN.md) — decisions, reasoning, build order, blockers
