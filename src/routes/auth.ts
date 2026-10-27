@@ -407,7 +407,15 @@ const PATCHABLE = [
   'theme_layout',
   'widgets',
   'hidden_sections',
+  'heard_from',
 ] as const;
+
+/**
+ * "Where did you hear about OpenTV?" (2.0.3, asked once after the first sign-in).
+ * A closed list, so the column can only ever hold a channel and never a name
+ * or a sentence: what is wanted is which channel brings people, not whose path.
+ */
+export const HEARD_FROM = ['reddit', 'store', 'friend', 'creator', 'other'] as const;
 
 /** Generous for twenty-odd widgets with a value each, small enough that a bad
  *  client cannot use a profile row as storage. */
@@ -434,7 +442,7 @@ auth.patch('/me', async (c) => {
   // finds out immediately (docs/IMPLEMENTATION.md §1d).
   const keys = Object.keys(b);
   if (keys.some((k) => !(PATCHABLE as readonly string[]).includes(k))) {
-    return fail(c, 400, 'invalid_body', 'Only display_name, bio, is_private, links, cover_url, the theme fields and hidden_sections may be changed.');
+    return fail(c, 400, 'invalid_body', 'Only display_name, bio, is_private, links, cover_url, the theme fields, hidden_sections and heard_from may be changed.');
   }
   if (keys.length === 0) return fail(c, 400, 'invalid_body', 'Nothing to change.');
 
@@ -594,6 +602,15 @@ auth.patch('/me', async (c) => {
     }
     sets.push('hidden_sections = ?');
     binds.push(parsed.value);
+  }
+
+  if ('heard_from' in b) {
+    const v = b.heard_from;
+    if (typeof v !== 'string' || !(HEARD_FROM as readonly string[]).includes(v)) {
+      return fail(c, 400, 'invalid_body', `heard_from must be one of ${HEARD_FROM.join(', ')}.`);
+    }
+    sets.push('heard_from = ?');
+    binds.push(v);
   }
 
   const res = await c.env.DB.prepare(

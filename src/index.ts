@@ -24,6 +24,7 @@ import { web } from '@/routes/web';
 import { profiles } from '@/routes/profiles';
 import { ratings } from '@/routes/ratings';
 import { rc } from '@/routes/rc';
+import { freeMonth } from '@/routes/free-month';
 import { ADMIN_PAGE } from '@/admin-page';
 import { admin } from '@/routes/admin';
 import { reconcile } from '@/routes/reconcile';
@@ -156,6 +157,7 @@ v1.route('/', reconcile);
 // session — it belongs to no user, so it sits with `admin` rather than in the
 // social routers.
 v1.route('/', rc);
+v1.route('/', freeMonth);
 v1.route('/', supportChat);
 v1.route('/', admin);
 
