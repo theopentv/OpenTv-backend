@@ -156,6 +156,28 @@ describe('GET /v1/profiles/:handle/published', () => {
     expect(res.json.movies).toHaveLength(1);
   });
 
+  it('Simple view: nobody else gets the numbers, only that the owner chose it', async () => {
+    await call(env, 'PUT', '/v1/me/published', {
+      token,
+      body: { kind: 'show', stats: { episodes_watched: 100, minutes_watched: 4000, simple_view: true }, titles: [title(1)] },
+    });
+    const other = await call(env, 'GET', '/v1/profiles/mahmood/published', { token: await tokenFor(env, 'p2') });
+    expect(other.json.stats).toBeNull();
+    expect(other.json.simple_view).toBe(true);
+    expect(other.json.shows).toHaveLength(1);
+    // The owner still reads their own row: the phone's library check compares against it.
+    const mine = await call(env, 'GET', '/v1/profiles/mahmood/published', { token });
+    expect(mine.json.stats.episodes_watched).toBe(100);
+    // Turning it off is the next publish that does not say it.
+    await call(env, 'PUT', '/v1/me/published', {
+      token,
+      body: { kind: 'show', stats: { episodes_watched: 100, minutes_watched: 4000 }, titles: [title(1)] },
+    });
+    const again = await call(env, 'GET', '/v1/profiles/mahmood/published');
+    expect(again.json.stats.episodes_watched).toBe(100);
+    expect(again.json.simple_view).toBe(false);
+  });
+
   it('keeps the OWNER’S order — favourites are not sorted to the front', async () => {
     // The shelf is drawn in the order the phone published it. Hoisting
     // favourites would give a public profile a different order from the

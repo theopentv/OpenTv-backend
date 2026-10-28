@@ -197,7 +197,8 @@ web.get('/:handle{@[A-Za-z0-9_.-]{1,40}}', async (c) => {
   const ps = hides('stats')
     ? null
     : await c.env.DB.prepare(
-        'SELECT episodes_watched, minutes_watched, movie_minutes, shows_count, movies_count FROM profile_stats WHERE profile_id = ?',
+        // simple_view (0065): the owner chose counts-only, so the web page shows none, like a hidden section.
+        'SELECT episodes_watched, minutes_watched, movie_minutes, shows_count, movies_count FROM profile_stats WHERE profile_id = ? AND simple_view = 0',
       )
         .bind(row.id)
         .first<{ episodes_watched: number; minutes_watched: number; movie_minutes: number; shows_count: number; movies_count: number }>();

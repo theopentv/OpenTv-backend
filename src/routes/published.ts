@@ -360,8 +360,8 @@ published.put('/me/published', requireAuth, async (c) => {
     .prepare(
       `INSERT INTO profile_stats
          (profile_id, episodes_watched, minutes_watched, movie_minutes, shows_count, movies_count, updated_at,
-          publisher_device)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          publisher_device, simple_view)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (profile_id) DO UPDATE SET
          episodes_watched = excluded.episodes_watched,
          minutes_watched  = excluded.minutes_watched,
@@ -378,7 +378,9 @@ published.put('/me/published', requireAuth, async (c) => {
          updated_at       = excluded.updated_at,
          -- The phone that just spoke, when it said which (0052). An older
          -- build says nothing and the holder stays whoever it was.
-         publisher_device = COALESCE(excluded.publisher_device, profile_stats.publisher_device)`,
+         publisher_device = COALESCE(excluded.publisher_device, profile_stats.publisher_device),
+         -- Simple view (0065): what the phone said this time, so off is the next publish.
+         simple_view      = excluded.simple_view`,
     )
     .bind(
       me,
@@ -401,6 +403,7 @@ published.put('/me/published', requireAuth, async (c) => {
       kind === 'movie' ? n(stats.movies_count) || rows.length : 0,
       nowIso,
       device || null,
+      stats.simple_view === true ? 1 : 0,
       kind,
       kind,
     )
@@ -470,7 +473,7 @@ published.get('/profiles/:handle/published', async (c) => {
 
   const stats = await db
     .prepare(
-      `SELECT episodes_watched, minutes_watched, movie_minutes, shows_count, movies_count, updated_at
+      `SELECT episodes_watched, minutes_watched, movie_minutes, shows_count, movies_count, updated_at, simple_view
          FROM profile_stats WHERE profile_id = ?`,
     )
     .bind(owner.id)
@@ -481,6 +484,7 @@ published.get('/profiles/:handle/published', async (c) => {
       shows_count: number;
       movies_count: number;
       updated_at: string;
+      simple_view: number;
     }>();
 
   // THE OWNER'S ORDER, and nothing else's. `favourite DESC` used to come
@@ -526,6 +530,8 @@ published.get('/profiles/:handle/published', async (c) => {
     };
   };
   const all = res.results ?? [];
+  // Simple view (0065): the owner keeps their stats to themselves, and says so.
+  const simple = !owns && stats?.simple_view === 1;
   const shelf = (kind: 'show' | 'movie') =>
     hides(kind === 'show' ? 'shows' : 'movies') ? [] : all.filter((r) => r.kind === kind).map(shape);
 
@@ -534,7 +540,7 @@ published.get('/profiles/:handle/published', async (c) => {
     // has never synced must render as "no stats yet", not as somebody who has
     // watched nothing. A HIDDEN stats section reads as the same null, which is
     // the shape the client already knows how to draw nothing from.
-    stats: stats && !hides('stats')
+    stats: stats && !hides('stats') && !simple
       ? {
           episodes_watched: stats.episodes_watched,
           minutes_watched: stats.minutes_watched,
@@ -546,6 +552,7 @@ published.get('/profiles/:handle/published', async (c) => {
       : null,
     shows: shelf('show'),
     movies: shelf('movie'),
+    simple_view: simple,
   });
 });
 
