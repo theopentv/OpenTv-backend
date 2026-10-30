@@ -20,7 +20,7 @@ import {
 import { overBudget, SESSION_BUDGET } from '@/rate-limit';
 import { RENEW_AFTER_SECONDS, sign } from '@/session';
 import { refreshCommsuniProfile } from '@/routes/commsuni';
-import { freeMonthOpen } from '@/routes/free-month';
+import { FREE_MONTH_CAMPAIGN, freeMonthOpen } from '@/routes/free-month';
 
 /**
  * Sign-in, the session, the handle flow, and account deletion.
@@ -53,6 +53,7 @@ type ProfileRow = {
   created_at: string;
   deleted_at: string | null;
   free_month_at?: string | null;
+  free_month_campaign?: string | null;
 };
 
 function parseLinks(raw: string | null): unknown {
@@ -385,7 +386,8 @@ auth.get('/me', async (c) => {
     // dashboard's switch — and whether this account has had its month, so a
     // signed-in phone stops showing the invitation. Older apps ignore both.
     free_month_open: await freeMonthOpen(c.env),
-    free_month_at: row.free_month_at ?? null,
+    // THIS CAMPAIGN'S, so a month from an earlier window leaves the card up.
+    free_month_at: row.free_month_campaign === FREE_MONTH_CAMPAIGN ? (row.free_month_at ?? null) : null,
     // THE DATABASE'S ANSWER, not the token's. `requireVerified` reads the scope
     // baked into the session, which cannot change after it is issued — so an
     // account confirmed (or un-confirmed) since sign-in would otherwise never

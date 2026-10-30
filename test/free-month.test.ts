@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { call, freshDatabase, insertProfile, makeEnv, tokenFor } from './harness';
 import { FREE_MONTH_OPEN_KEY, freeMonthUntil } from '@/routes/free-month';
 import type { Env } from '@/env';
@@ -81,13 +81,69 @@ describe('POST /v1/me/free-month', () => {
     expect(Date.parse(until(raw)!)).toBeGreaterThan(Date.now() + 29 * DAY);
   });
 
-  it('leaves a paying subscriber alone, without spending their claim', async () => {
+  it('hands the claim back when a paying subscriber has nothing to extend at the store', async () => {
     const { raw, env } = await seed();
     raw.prepare('UPDATE profiles SET is_plus = 1 WHERE id = ?').run('p_me');
     const res = await call(env, 'POST', '/v1/me/free-month', { token: await tokenFor(env, 'p_me') });
     expect(res.json).toEqual({ granted: false, reason: 'subscribed' });
     expect(until(raw)).toBeNull();
     expect((raw.prepare('SELECT COUNT(*) AS n FROM free_month_claims').get() as { n: number }).n).toBe(0);
+    expect(raw.prepare('SELECT free_month_campaign FROM profiles WHERE id = ?').get('p_me')).toEqual({ free_month_campaign: null });
+  });
+
+  const storeFetch = (extendStatus: number) =>
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const entitlements = { plus: { product_identifier: 'monthly', expires_date: '2099-01-01T00:00:00Z' } };
+      if (init?.method !== 'POST') {
+        return new Response(
+          JSON.stringify({
+            subscriber: { entitlements, subscriptions: { monthly: { store: 'app_store', store_transaction_id: '77' } } },
+          }),
+        );
+      }
+      expect(url).toContain('/subscriptions/77/extend');
+      expect(JSON.parse(String(init.body))).toMatchObject({ extend_by_days: 30 });
+      return new Response(JSON.stringify({ subscriber: { entitlements }, message: 'two extensions a year' }), { status: extendStatus });
+    });
+
+  it('adds a paying subscriber\'s month at the store, once, and leaves plus_until alone', async () => {
+    const { raw, env } = await seed();
+    raw.prepare('UPDATE profiles SET is_plus = 1 WHERE id = ?').run('p_me');
+    const paid = { ...env, RC_SECRET_API_KEY: 'sk_test' } as Env;
+    const fetchMock = storeFetch(200);
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const token = await tokenFor(paid, 'p_me');
+      const res = await call(paid, 'POST', '/v1/me/free-month', { token });
+      expect(res.json).toEqual({ granted: true, plus_until: '2099-01-01T00:00:00Z', via: 'store' });
+      expect(until(raw)).toBeNull();
+      const again = await call(paid, 'POST', '/v1/me/free-month', { token });
+      expect(again.json).toEqual({ granted: false, reason: 'claimed' });
+      expect(fetchMock.mock.calls.filter(([, i]) => i?.method === 'POST')).toHaveLength(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('hands the claim back when the store refuses, so Give can still reach them', async () => {
+    const { raw, env } = await seed();
+    raw.prepare('UPDATE profiles SET is_plus = 1 WHERE id = ?').run('p_me');
+    const paid = { ...env, RC_SECRET_API_KEY: 'sk_test' } as Env;
+    vi.stubGlobal('fetch', storeFetch(400));
+    try {
+      const res = await call(paid, 'POST', '/v1/me/free-month', { token: await tokenFor(paid, 'p_me') });
+      expect(res.json).toEqual({ granted: false, reason: 'subscribed' });
+      expect((raw.prepare('SELECT COUNT(*) AS n FROM free_month_claims').get() as { n: number }).n).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('counts a month from before campaigns as no campaign: it may be taken at Christmas', async () => {
+    const { raw, env } = await seed();
+    raw.prepare("UPDATE profiles SET free_month_at = '2026-10-27T00:00:00.000Z' WHERE id = ?").run('p_me');
+    const res = await call(env, 'POST', '/v1/me/free-month', { token: await tokenFor(env, 'p_me') });
+    expect(res.json).toMatchObject({ granted: true });
   });
 
   it('is not given again after deleting the account and signing in with the same Google account', async () => {
@@ -158,6 +214,10 @@ describe('GET /v1/me free month fields', () => {
     expect(me.json.free_month_via).toBeUndefined();
     await env.CACHE.put(FREE_MONTH_OPEN_KEY, '1');
     raw.prepare("UPDATE profiles SET free_month_at = '2026-10-27T00:00:00.000Z' WHERE id = 'p_me'").run();
+    me = await call(env, 'GET', '/v1/me', { token });
+    // A month from before campaigns is not this campaign's: the card stays up.
+    expect(me.json).toMatchObject({ free_month_open: true, free_month_at: null });
+    raw.prepare("UPDATE profiles SET free_month_campaign = 'christmas-2026' WHERE id = 'p_me'").run();
     me = await call(env, 'GET', '/v1/me', { token });
     expect(me.json).toMatchObject({ free_month_open: true, free_month_at: '2026-10-27T00:00:00.000Z' });
   });
