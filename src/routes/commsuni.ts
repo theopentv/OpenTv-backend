@@ -181,6 +181,20 @@ async function actorId(secret: string, profileId: string): Promise<string> {
 
 type Upstream = { status: number; body: unknown; duplicate?: boolean };
 
+/** A tally for the bill (migration 0067). Never allowed to cost a comment. */
+async function countCall(env: App['Bindings'], kind: 'read' | 'media' | 'write'): Promise<void> {
+  try {
+    await env.DB.prepare(
+      `INSERT INTO commsuni_usage (day, kind, calls) VALUES (?, ?, 1)
+       ON CONFLICT (day, kind) DO UPDATE SET calls = calls + 1`,
+    )
+      .bind(new Date().toISOString().slice(0, 10), kind)
+      .run();
+  } catch {
+    // no table yet, or D1 busy: the comment matters more than the count
+  }
+}
+
 /** One request to CommsUni with an allowlisted set of headers — never the
  *  device's own (§1: no forwarded Origin). */
 async function upstream(
@@ -196,6 +210,7 @@ async function upstream(
   };
   if (write?.body !== undefined) headers['Content-Type'] = 'application/json';
   if (write?.idempotencyKey) headers['Idempotency-Key'] = write.idempotencyKey;
+  await countCall(env, !write ? 'read' : path === '/media-grants' ? 'media' : 'write');
   const res = await fetch(`${COMMSUNI_BASE}${path}`, {
     method: write?.method ?? 'GET',
     headers,

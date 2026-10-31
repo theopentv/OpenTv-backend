@@ -96,6 +96,14 @@ describe('GET /v1/commsuni/comments', () => {
     expect((await get()).status).toBe(200);
   });
 
+  it('counts a read that reached CommsUni, and not one the cache answered', async () => {
+    await get();
+    await get();
+    expect(calls).toHaveLength(1);
+    const row = await env.DB.prepare(`SELECT kind, calls FROM commsuni_usage`).first();
+    expect(row).toEqual({ kind: 'read', calls: 1 });
+  });
+
   it('passes the language counts through, first page only', async () => {
     reply = { status: 200, body: { data: { comments: [], nextCursor: null, languageCounts: [{ language: 'en', count: 812 }, { language: 'ar', count: 'x' }], sourceCounts: [{ source: 'tvtime', count: 800 }, { source: 'opentv', count: 0 }, { source: 7, count: 1 }] } } };
     const res = await get('type=show&id=7');
