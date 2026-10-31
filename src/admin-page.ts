@@ -96,6 +96,8 @@ export const ADMIN_PAGE = `<!doctype html>
   .foot { color:#6b6b72; font-size:12px; margin-top:34px; }
   table { width:100%; border-collapse:collapse; background:#16161a; border-radius:12px;
           overflow:hidden; font-size:14px; }
+  th.sort { cursor:pointer; user-select:none; }
+  th.sort:hover, th.sort.on { color:#fff; }
   th { text-align:left; color:#8a8a92; font-size:11px; text-transform:uppercase;
        letter-spacing:.05em; padding:10px 12px; background:#1b1b1f; font-weight:700; }
   td { padding:10px 12px; border-top:1px solid #202024; white-space:nowrap; }
@@ -1039,6 +1041,39 @@ function drawChips() {
     (activeFilters.size ? '<button class="chip clear" data-f="__clear">Clear</button>' : '');
 }
 
+/*
+ * SORTED HERE, FROM WHAT IS ALREADY LOADED (1 Nov): a click costs the server
+ * nothing. First click biggest (or A to Z, or newest), second click the other
+ * way. Somebody who has never sent a count stays last either way: unknown is
+ * not zero, so it must not sort as one.
+ */
+let peopleSort = null;
+const SORT_TEXT = new Set(['providers']);
+function sortPeople(rows) {
+  if (!peopleSort) return rows;
+  const { key, dir } = peopleSort;
+  const value = (u) => (SORT_TEXT.has(key) ? u[key] || null : u[key]);
+  return [...rows].sort((a, b) => {
+    const x = value(a), y = value(b);
+    if (x == null || y == null) return x == null ? (y == null ? 0 : 1) : -1;
+    return dir * (x < y ? -1 : x > y ? 1 : 0);
+  });
+}
+function sortTh(key, label) {
+  const on = peopleSort?.key === key;
+  const up = on && peopleSort.dir > 0;
+  return '<th data-sort="' + key + '" aria-sort="' + (on ? (up ? 'ascending' : 'descending') : 'none') + '" class="sort' +
+    (key === 'providers' || key === 'created_at' ? '' : ' num') + (on ? ' on' : '') + '">' + label + (on ? (up ? ' ↑' : ' ↓') : '') + '</th>';
+}
+$('users').addEventListener('click', (e) => {
+  const th = e.target.closest('th[data-sort]');
+  if (!th) return;
+  const key = th.dataset.sort;
+  const first = SORT_TEXT.has(key) ? 1 : -1;
+  peopleSort = { key, dir: peopleSort?.key === key ? -peopleSort.dir : first };
+  drawPeople();
+});
+
 function drawPeople() {
   const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
@@ -1075,21 +1110,21 @@ function drawPeople() {
     : u.imported_archive ? '<span class="name">imported, never sent (phone older than 1.6.8 gives no reason)</span>'
     : '<span class="name">no library yet</span>';
   const on = FILTERS.filter((f) => activeFilters.has(f.id));
-  const rows = allPeople.filter((u) => on.every((f) => f.test(u)));
+  const rows = sortPeople(allPeople.filter((u) => on.every((f) => f.test(u))));
   drawChips();
   $('shown').textContent = on.length ? 'Showing ' + rows.length + ' of ' + allPeople.length : allPeople.length + ' people';
   $('users').innerHTML =
     '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>Backup / Sync</th><th>' + esc(dayName(viewDay || serverToday)) + '</th>' +
-    '<th>Signs in with</th><th>Joined</th><th class="num">Comments</th>' +
-    '<th class="num">Ratings</th><th class="num">Feelings</th><th class="num">Characters</th>' +
-    '<th class="num">Photos</th><th class="num">Lists</th>' +
+    sortTh('providers', 'Signs in with') + sortTh('created_at', 'Joined') + sortTh('comments', 'Comments') +
+    sortTh('ratings', 'Ratings') + sortTh('feelings', 'Feelings') + sortTh('characters', 'Characters') +
+    sortTh('images', 'Photos') + sortTh('lists', 'Lists') +
     // A LIFETIME TOTAL, NOT AN EVENT. There is no watch history on this server,
     // so nothing here can say what somebody watched today. What a phone sends
     // when it publishes a profile is how many -- which is real, and was sitting
     // unread in profile_stats. Em dash where a profile has never published:
     // that is the truth about it, where 0 would be a claim.
-    '<th class="num">Episodes</th><th class="num">Films</th>' +
-    '<th class="num">Followers</th></tr>' +
+    sortTh('episodes_watched', 'Episodes') + sortTh('movies_watched', 'Films') +
+    sortTh('followers', 'Followers') + '</tr>' +
     rows.map((u) => {
       const placeholder = String(u.handle).startsWith('user_p_');
       // THE SAME SHAPE AS THE PLUS TAG, deliberately: both answer "what kind of
