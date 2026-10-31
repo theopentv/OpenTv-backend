@@ -305,7 +305,20 @@ admin.get('/admin/commsuni', async (c) => {
   if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
     return fail(c, 401, 'unauthenticated', 'Sign in first.');
   }
-  return c.json({ on: !(await c.env.CACHE.get(COMMSUNI_OFF_KEY)) }, 200, { 'Cache-Control': 'no-store' });
+  // What their meter should also say: calls that reached them (migration 0067).
+  const since = new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
+  const { results } = await c.env.DB.prepare(`SELECT day, kind, calls FROM commsuni_usage WHERE day >= ?`)
+    .bind(since)
+    .all<{ day: string; kind: string; calls: number }>();
+  const today = new Date().toISOString().slice(0, 10);
+  const sum = (kind: string, from: string) =>
+    results.filter((r) => r.kind === kind && r.day >= from).reduce((n, r) => n + r.calls, 0);
+  const totals = (from: string) => ({ read: sum('read', from), media: sum('media', from), write: sum('write', from) });
+  return c.json(
+    { on: !(await c.env.CACHE.get(COMMSUNI_OFF_KEY)), today: totals(today), days30: totals(since) },
+    200,
+    { 'Cache-Control': 'no-store' },
+  );
 });
 
 admin.post('/admin/commsuni', async (c) => {

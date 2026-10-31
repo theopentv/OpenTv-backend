@@ -59,6 +59,15 @@ describe('the admin dashboard', () => {
     expect(forged.status).toBe(401);
   });
 
+  it('shows CommsUni calls for today and for 30 days, not older ones', async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    raw.prepare(`INSERT INTO commsuni_usage (day, kind, calls) VALUES (?, 'read', 7), ('2020-01-01', 'read', 99)`).run(today);
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    const res = await call(env, 'GET', '/v1/admin/commsuni', { headers: { Cookie: cookie } });
+    expect(res.json.today).toEqual({ read: 7, media: 0, write: 0 });
+    expect(res.json.days30.read).toBe(7);
+  });
+
   it('answers stats with the cookie it just issued', async () => {
     const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
     const res = await call(env, 'GET', '/v1/admin/stats', { headers: { Cookie: cookie } });

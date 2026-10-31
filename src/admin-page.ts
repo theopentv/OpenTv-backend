@@ -217,6 +217,7 @@ export const ADMIN_PAGE = `<!doctype html>
       <!-- Refresh may answer from the ten-minute copy; this one never does. -->
       <button class="ghost" id="hard" hidden title="Read everything from the database now">Hard refresh</button>
       <!-- Every phone at once, no app update: off means no CommsUni comments anywhere. -->
+      <span id="commsuni-use" hidden style="font-size:12px;opacity:.7;align-self:center" title="Calls that reached CommsUni. Reads are what they bill."></span>
       <button class="ghost" id="commsuni" hidden title="Show CommsUni comments in the app">CommsUni: …</button>
       <select class="ghost" id="event" hidden title="Seasonal decorations and themes in the app"></select>
       <button class="ghost" id="out" hidden>Sign out</button>
@@ -1503,8 +1504,15 @@ function drawCommsuni() {
 }
 async function readCommsuni() {
   const res = await fetch('/v1/admin/commsuni', { credentials: 'same-origin' });
-  commsuniOn = res.ok ? (await res.json()).on : null;
+  const got = res.ok ? await res.json() : null;
+  commsuniOn = got ? got.on : null;
   drawCommsuni();
+  $('commsuni-use').hidden = !got;
+  if (got) {
+    const t = got.today, m = got.days30;
+    $('commsuni-use').textContent =
+      'Today ' + t.read + ' reads, ' + t.media + ' images, ' + t.write + ' writes · 30 days ' + m.read + ' reads, ' + m.media + ' images, ' + m.write + ' writes';
+  }
 }
 $('commsuni').addEventListener('click', async () => {
   if (commsuniOn == null) return;
