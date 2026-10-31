@@ -1043,34 +1043,49 @@ function drawChips() {
 
 /*
  * SORTED HERE, FROM WHAT IS ALREADY LOADED (1 Nov): a click costs the server
- * nothing. First click biggest (or A to Z, or newest), second click the other
- * way. Somebody who has never sent a count stays last either way: unknown is
- * not zero, so it must not sort as one.
+ * nothing. Every header has three states: first click biggest (or A to Z, or
+ * newest), second click the other way, third click back to the server's own
+ * order. Somebody with no value stays last either way: unknown is not zero.
  */
 let peopleSort = null;
-const SORT_TEXT = new Set(['providers']);
+const plusRank = (u) => {
+  if (u.is_plus) return 3;
+  if (!u.plus_until) return 0;
+  return Date.parse(u.plus_until) > Date.now() ? 2 : 1;
+};
+const SORT_BY = {
+  handle: (u) => (u.joined_at ? String(u.handle).toLowerCase() : null),
+  plus: plusRank,
+  plus_until: (u) => u.plus_until || null,
+  backup: (u) => [u.backup_at, u.sync_at].filter(Boolean).sort().pop() ?? null,
+  today: (u) => (u.today || []).length,
+  providers: (u) => u.providers || null,
+};
+const SORT_TEXT_FIRST = new Set(['handle', 'providers']);
 function sortPeople(rows) {
   if (!peopleSort) return rows;
   const { key, dir } = peopleSort;
-  const value = (u) => (SORT_TEXT.has(key) ? u[key] || null : u[key]);
+  const value = SORT_BY[key] || ((u) => u[key]);
   return [...rows].sort((a, b) => {
     const x = value(a), y = value(b);
     if (x == null || y == null) return x == null ? (y == null ? 0 : 1) : -1;
     return dir * (x < y ? -1 : x > y ? 1 : 0);
   });
 }
-function sortTh(key, label) {
+function sortTh(key, label, num) {
   const on = peopleSort?.key === key;
   const up = on && peopleSort.dir > 0;
   return '<th data-sort="' + key + '" aria-sort="' + (on ? (up ? 'ascending' : 'descending') : 'none') + '" class="sort' +
-    (key === 'providers' || key === 'created_at' ? '' : ' num') + (on ? ' on' : '') + '">' + label + (on ? (up ? ' ↑' : ' ↓') : '') + '</th>';
+    (num ? ' num' : '') + (on ? ' on' : '') + '">' + label + (on ? (up ? ' ↑' : ' ↓') : '') + '</th>';
 }
 $('users').addEventListener('click', (e) => {
   const th = e.target.closest('th[data-sort]');
   if (!th) return;
   const key = th.dataset.sort;
-  const first = SORT_TEXT.has(key) ? 1 : -1;
-  peopleSort = { key, dir: peopleSort?.key === key ? -peopleSort.dir : first };
+  const first = SORT_TEXT_FIRST.has(key) ? 1 : -1;
+  peopleSort = peopleSort?.key !== key ? { key, dir: first }
+    : peopleSort.dir === first ? { key, dir: -first }
+    : null;
   drawPeople();
 });
 
@@ -1114,17 +1129,18 @@ function drawPeople() {
   drawChips();
   $('shown').textContent = on.length ? 'Showing ' + rows.length + ' of ' + allPeople.length : allPeople.length + ' people';
   $('users').innerHTML =
-    '<tr><th>Handle</th><th>Plus</th><th>Give Plus</th><th>Last opened</th><th>Backup / Sync</th><th>' + esc(dayName(viewDay || serverToday)) + '</th>' +
-    sortTh('providers', 'Signs in with') + sortTh('created_at', 'Joined') + sortTh('comments', 'Comments') +
-    sortTh('ratings', 'Ratings') + sortTh('feelings', 'Feelings') + sortTh('characters', 'Characters') +
-    sortTh('images', 'Photos') + sortTh('lists', 'Lists') +
+    '<tr>' + sortTh('handle', 'Handle') + sortTh('plus', 'Plus') + sortTh('plus_until', 'Give Plus') +
+    sortTh('last_seen_at', 'Last opened') + sortTh('backup', 'Backup / Sync') + sortTh('today', esc(dayName(viewDay || serverToday))) +
+    sortTh('providers', 'Signs in with') + sortTh('created_at', 'Joined') + sortTh('comments', 'Comments', true) +
+    sortTh('ratings', 'Ratings', true) + sortTh('feelings', 'Feelings', true) + sortTh('characters', 'Characters', true) +
+    sortTh('images', 'Photos', true) + sortTh('lists', 'Lists', true) +
     // A LIFETIME TOTAL, NOT AN EVENT. There is no watch history on this server,
     // so nothing here can say what somebody watched today. What a phone sends
     // when it publishes a profile is how many -- which is real, and was sitting
     // unread in profile_stats. Em dash where a profile has never published:
     // that is the truth about it, where 0 would be a claim.
-    sortTh('episodes_watched', 'Episodes') + sortTh('movies_watched', 'Films') +
-    sortTh('followers', 'Followers') + '</tr>' +
+    sortTh('episodes_watched', 'Episodes', true) + sortTh('movies_watched', 'Films', true) +
+    sortTh('followers', 'Followers', true) + '</tr>' +
     rows.map((u) => {
       const placeholder = String(u.handle).startsWith('user_p_');
       // THE SAME SHAPE AS THE PLUS TAG, deliberately: both answer "what kind of
