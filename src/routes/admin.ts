@@ -1449,6 +1449,28 @@ admin.get('/admin/image/:id', async (c) => {
  */
 export const TREND_DAYS = [14, 30, 90] as const;
 
+/**
+ * The daily puzzle's numbers (`puzzle_days`). A streak is live while its owner
+ * played today or yesterday: the same grace the game gives. Members only; a
+ * phone that never joined never calls the server.
+ */
+admin.get('/admin/puzzle', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const row = await c.env.DB.prepare(
+    `SELECT COUNT(*) AS playing, COALESCE(MAX(streak), 0) AS longest,
+            COALESCE(SUM(day = date('now')), 0) AS today,
+            COALESCE(SUM(streak >= 7), 0) AS week, COALESCE(SUM(streak >= 30), 0) AS month
+       FROM (SELECT p.profile_id, MAX(p.day) AS day, p.streak FROM puzzle_days p
+               JOIN profiles pr ON pr.id = p.profile_id
+              WHERE p.day >= date('now', '-1 day') AND NOT ${robotSql('pr')}
+              GROUP BY p.profile_id)`,
+  ).first<{ playing: number; longest: number; today: number; week: number; month: number }>();
+  const ever = await c.env.DB.prepare('SELECT COUNT(DISTINCT profile_id) AS n, MIN(day) AS since FROM puzzle_days').first<{ n: number; since: string | null }>();
+  return c.json({ ...row, players: ever?.n ?? 0, since: ever?.since ?? null }, 200, { 'Cache-Control': 'no-store' });
+});
+
 admin.get('/admin/trends', async (c) => {
   if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
     return fail(c, 401, 'unauthenticated', 'Sign in first.');
@@ -1460,7 +1482,7 @@ admin.get('/admin/trends', async (c) => {
   // counts, never who.
   type Row = { day: string; n: number; p?: number; apple?: number; google?: number };
   const db = c.env.DB;
-  const [joins, opened, comments, ratings, deletes, plus, returned, syncs, backups, acted] = await Promise.all([
+  const [joins, opened, comments, ratings, deletes, plus, returned, syncs, backups, acted, played] = await Promise.all([
     db.prepare(
       `SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n,
               SUM(EXISTS (SELECT 1 FROM identities i WHERE i.profile_id = pr.id AND i.provider = 'apple')) AS apple,
@@ -1537,6 +1559,8 @@ admin.get('/admin/trends', async (c) => {
        WHERE EXISTS (SELECT 1 FROM profile_days d WHERE d.profile_id = x.who AND d.day = x.day)
        GROUP BY day`,
     ).bind(since, since, since, since, since, since).all<Row>(),
+    db.prepare(`SELECT p.day, COUNT(*) AS n FROM puzzle_days p JOIN profiles pr ON pr.id = p.profile_id
+                 WHERE p.day >= ? AND NOT ${robotSql('pr')} GROUP BY p.day`).bind(since).all<Row>(),
   ]);
   // A day's next-day return is only known once that next day is over, so the
   // last two days are left out rather than drawn as zero.
@@ -1571,6 +1595,7 @@ admin.get('/admin/trends', async (c) => {
         returned: returnedRows,
         method: joins.results ?? [],
         usage: [...usage.values()],
+        puzzle: played.results ?? [],
       },
     },
     200,

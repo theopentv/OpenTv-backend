@@ -251,6 +251,9 @@ export const ADMIN_PAGE = `<!doctype html>
       <button class="tab" data-days="90">90 days</button>
     </div>
     <div class="trends" id="trends"><p class="note">Loading…</p></div>
+    <h2>Daily puzzle</h2>
+    <p class="note" id="puzzlenote">Members only, from the day their app started reporting. Playing means finished today or yesterday.</p>
+    <div class="grid" id="puzzle"></div>
     <h2>Activity</h2>
     <p class="note">Everything the community holds, imports included. These only grow.</p>
     <div class="grid" id="activity"></div>
@@ -778,7 +781,7 @@ async function load() {
     ['People voting, 30 days', t.voters_30d],
   ]);
 
-  await loadTrends();
+  await Promise.all([loadTrends(), loadPuzzle()]);
 
   await loadPeople();
 
@@ -810,6 +813,7 @@ const TRENDS = [
   ['returned', 'New members back the next day (%)', 'pct'],
   ['method', 'How new members signed up', 'stack'],
   ['usage', 'Plus in use: backups and syncing', 'stack'],
+  ['puzzle', 'People who played the daily puzzle', 'avg'],
 ];
 // Stacked charts: each part of the bar, its row field, its colour. Email is
 // what is left of a day's joins after Apple and Google.
@@ -954,6 +958,19 @@ document.addEventListener('mouseover', (e) => {
   ttip.style.top = Math.max(8, r.top - h - 8) + 'px';
 });
 document.addEventListener('scroll', () => { ttip.style.display = 'none'; }, true);
+async function loadPuzzle() {
+  const res = await fetch('/v1/admin/puzzle', { credentials: 'same-origin' });
+  if (!res.ok) return;
+  const p = await res.json();
+  cards($('puzzle'), [
+    ['Played today', p.today],
+    ['Streaks alive', p.playing],
+    ['Longest streak', p.longest],
+    ['Streaks of 7+', p.week],
+    ['Streaks of 30+', p.month],
+    ['Ever played', p.players],
+  ]);
+}
 async function loadTrends() {
   const res = await fetch('/v1/admin/trends?days=' + trendDays, { credentials: 'same-origin' });
   if (!res.ok) { $('trends').innerHTML = '<p class="note">Trends could not be read.</p>'; return; }

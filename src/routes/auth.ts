@@ -815,6 +815,7 @@ auth.delete('/me', async (c) => {
     db.prepare('DELETE FROM devices WHERE profile_id = ?').bind(me),
     // A personal offer (0061) names nothing but a store offer and a date.
     db.prepare('DELETE FROM personal_offers WHERE profile_id = ?').bind(me),
+    db.prepare('DELETE FROM puzzle_days WHERE profile_id = ?').bind(me),
 
     // The profiles row is SCRUBBED, not deleted. Hard-deleting would cascade
     // away the reports this person filed — silently defeating the 24-hour
