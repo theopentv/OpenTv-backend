@@ -50,6 +50,8 @@ export const ADMIN_PAGE = `<!doctype html>
              letter-spacing:.05em; margin-top:2px; }
   .card.warn .n { color:#ffd400; }
   .card.bad .n { color:#e5484d; }
+  .card .d { font-size:13px; font-weight:700; margin-left:6px; color:#78be3d; }
+  .card .d.down { color:#e5484d; }
   h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em;
        color:#8a8a92; margin:30px 0 10px; font-weight:700; }
   /* A heading that needs a sentence gets one, rather than leaving the reader to
@@ -219,7 +221,6 @@ export const ADMIN_PAGE = `<!doctype html>
       <!-- Refresh may answer from the ten-minute copy; this one never does. -->
       <button class="ghost" id="hard" hidden title="Read everything from the database now">Hard refresh</button>
       <!-- Every phone at once, no app update: off means no CommsUni comments anywhere. -->
-      <span id="commsuni-use" hidden style="font-size:12px;opacity:.7;align-self:center" title="Calls that reached CommsUni. Reads are what they bill."></span>
       <button class="ghost" id="commsuni" hidden title="Show CommsUni comments in the app">CommsUni: …</button>
       <select class="ghost" id="event" hidden title="Seasonal decorations and themes in the app"></select>
       <button class="ghost" id="out" hidden>Sign out</button>
@@ -242,7 +243,8 @@ export const ADMIN_PAGE = `<!doctype html>
       <div class="chatbtns"><button onclick="document.getElementById('chatdlg').close()">Close</button><button id="chatsend">Send</button></div></dialog>
     <h2>People</h2>
     <p class="note">"Today" here means since 03:00 Iraq time (midnight UTC). Every time on this page is shown in Iraq time.</p>
-    <div class="grid" id="people"></div>
+    <!-- One grid, two fillers: CommsUni's calls take the empty end of the last row. -->
+    <div class="grid"><div id="people" style="display:contents"></div><div id="cu" style="display:contents"></div></div>
     <h2>Trends</h2>
     <p class="note">Each day runs 03:00 → 03:00 Iraq time (midnight UTC, so every member counts on the same clock). The lighter last bar is today so far. The dashed line is the daily average; the arrow compares with the period before.</p>
     <div class="tabs" id="trendtabs">
@@ -682,10 +684,20 @@ function wireOffer() {
   });
 }
 
+/* CHANGE SINCE THE LAST HARD REFRESH. Memory only: a fresh page load or a
+   plain Refresh shows no deltas; only Hard refresh compares with the numbers
+   that were on screen when it was pressed. */
+const shown = new Map();
+let deltaFrom = null;
 function cards(el, items) {
-  el.innerHTML = items.map(([k, n, cls]) =>
-    '<div class="card ' + (cls || '') + '"><div class="n">' + (n ?? 0).toLocaleString() +
-    '</div><div class="k">' + k + '</div></div>').join('');
+  el.innerHTML = items.map(([k, n, cls]) => {
+    const key = el.id + '|' + k, v = n ?? 0, was = deltaFrom?.get(key);
+    shown.set(key, v);
+    const d = typeof v === 'number' && typeof was === 'number' ? Math.round((v - was) * 10) / 10 : 0;
+    const badge = d ? '<span class="d' + (d < 0 ? ' down' : '') + '">' + (d > 0 ? '+' : '') + d.toLocaleString() + '</span>' : '';
+    return '<div class="card ' + (cls || '') + '"><div class="n">' + v.toLocaleString() + badge +
+      '</div><div class="k">' + k + '</div></div>';
+  }).join('');
 }
 
 async function load() {
@@ -1401,8 +1413,11 @@ $('hard').addEventListener('click', async () => {
   $('hard').textContent = 'Reading…';
   try {
     await fetch('/v1/admin/cache/clear', { method: 'POST', credentials: 'same-origin' });
+    deltaFrom = new Map(shown);
     await load();
+    await readCommsuni();
   } finally {
+    deltaFrom = null;
     $('hard').textContent = 'Hard refresh';
   }
 });
@@ -1577,12 +1592,18 @@ async function readCommsuni() {
   const got = res.ok ? await res.json() : null;
   commsuniOn = got ? got.on : null;
   drawCommsuni();
-  $('commsuni-use').hidden = !got;
+  // Calls that reached CommsUni. Reads are what they bill.
   if (got) {
     const t = got.today, m = got.days30;
-    $('commsuni-use').textContent =
-      'Today ' + t.read + ' reads, ' + t.media + ' images, ' + t.write + ' writes · 30 days ' + m.read + ' reads, ' + m.media + ' images, ' + m.write + ' writes';
-  }
+    cards($('cu'), [
+      ['CommsUni reads today', t.read],
+      ['CommsUni images today', t.media],
+      ['CommsUni writes today', t.write],
+      ['CommsUni reads, 30 days', m.read],
+      ['CommsUni images, 30 days', m.media],
+      ['CommsUni writes, 30 days', m.write],
+    ]);
+  } else $('cu').innerHTML = '';
 }
 $('commsuni').addEventListener('click', async () => {
   if (commsuniOn == null) return;
