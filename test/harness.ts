@@ -85,6 +85,7 @@ const MIGRATION_FILES = [
   '../migrations/0066_free_month_campaign.sql',
   '../migrations/0067_commsuni_usage.sql',
   '../migrations/0068_puzzle_days.sql',
+  '../migrations/0069_commsuni_blocks.sql',
 ];
 
 export const MIGRATIONS = MIGRATION_FILES.map((p) =>

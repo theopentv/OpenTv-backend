@@ -259,6 +259,7 @@ type RawComment = {
   text?: unknown;
   language?: unknown;
   createdAt?: unknown;
+  userId?: unknown;
   userName?: unknown;
   userAvatar?: unknown;
   userColor?: unknown;
@@ -290,6 +291,8 @@ export function trimComment(r: RawComment) {
     language: typeof r.language === 'string' ? r.language : null,
     createdAt: typeof r.createdAt === 'string' ? r.createdAt : '',
     author: {
+      /** The API's author id: what a member's Block author is keyed by (§A11.4). */
+      id: typeof r.userId === 'string' && r.userId.length <= 128 ? r.userId : null,
       name: typeof r.userName === 'string' ? r.userName : null,
       avatar: typeof r.userAvatar === 'string' ? r.userAvatar : null,
       color: typeof r.userColor === 'string' ? r.userColor : null,
@@ -846,6 +849,42 @@ commsuni.post('/commsuni/report', requireAuth, async (c) => {
   } catch {
     return fail(c, 503, 'unavailable', 'Try again later.');
   }
+});
+
+const BLOCKS_MAX = 500;
+const AUTHOR_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * BLOCK AUTHOR (Partner Terms §A11.4). A member hides one CommsUni author
+ * everywhere in OpenTV, on every device. Never sent to CommsUni and never a
+ * report: the phone filters the pages, which stay shareable between members.
+ */
+commsuni.get('/commsuni/blocks', requireAuth, async (c) => {
+  const rows = await c.env.DB.prepare('SELECT author_id, name, created_at FROM commsuni_blocks WHERE profile_id = ? ORDER BY created_at DESC')
+    .bind(c.get('profileId'))
+    .all<{ author_id: string; name: string | null; created_at: string }>();
+  return c.json({ blocks: rows.results.map((r) => ({ id: r.author_id, name: r.name, createdAt: r.created_at })) });
+});
+
+commsuni.post('/commsuni/blocks', requireAuth, async (c) => {
+  const b = (await c.req.json().catch(() => null)) as { id?: unknown; name?: unknown } | null;
+  const id = typeof b?.id === 'string' ? b.id : '';
+  if (!AUTHOR_RE.test(id)) return fail(c, 400, 'invalid_body', 'id is required.');
+  const name = typeof b?.name === 'string' ? b.name.slice(0, 64) : null;
+  const me = c.get('profileId');
+  const n = await c.env.DB.prepare('SELECT COUNT(*) AS n FROM commsuni_blocks WHERE profile_id = ?').bind(me).first<{ n: number }>();
+  if ((n?.n ?? 0) >= BLOCKS_MAX) return fail(c, 429, 'rate_limited', 'Too many blocked authors.');
+  await c.env.DB.prepare('INSERT OR IGNORE INTO commsuni_blocks (profile_id, author_id, name, created_at) VALUES (?, ?, ?, ?)')
+    .bind(me, id, name, new Date().toISOString())
+    .run();
+  return c.json({ ok: true });
+});
+
+commsuni.delete('/commsuni/blocks/:id', requireAuth, async (c) => {
+  const id = c.req.param('id');
+  if (!AUTHOR_RE.test(id)) return fail(c, 400, 'invalid_body', 'Bad id.');
+  await c.env.DB.prepare('DELETE FROM commsuni_blocks WHERE profile_id = ? AND author_id = ?').bind(c.get('profileId'), id).run();
+  return c.json({ ok: true });
 });
 
 /**
