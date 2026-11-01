@@ -781,7 +781,8 @@ async function load() {
     ['People voting, 30 days', t.voters_30d],
   ]);
 
-  await Promise.all([loadTrends(), loadPuzzle()]);
+  // Settled, not all: a chart that throws must never take the people table with it.
+  await Promise.allSettled([loadTrends(), loadPuzzle()]);
 
   await loadPeople();
 
@@ -909,6 +910,7 @@ function drawTrend(key, title, kind, d) {
     '<div class="tfoot">' + foot + '</div></div>';
 }
 const TIP_UNIT = {
+  puzzle: ['person played', 'people played'],
   joins: ['new member', 'new members'],
   opened: ['member opened the app', 'members opened the app'],
   comments: ['comment', 'comments'],
