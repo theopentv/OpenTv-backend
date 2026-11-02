@@ -94,7 +94,7 @@
     // returns the *web* client id as `aud`, which is the classic trap. Filled
     // in when Google sign-in is wired up in the app; empty means every Google
     // token is refused, which is the correct direction to fail.
-    "GOOGLE_CLIENT_IDS": "452943907676-p8tdhcpv1kfe92t8nf07vf6g5ao2m0mf.apps.googleusercontent.com,452943907676-vf096glumrms1bna4dcjhrtjo61f5kd1.apps.googleusercontent.com,452943907676-e39h1tgethjivr4eg5ao2n4i0hg2245d.apps.googleusercontent.com"
+    "GOOGLE_CLIENT_IDS": "452943907676-p8tdhcpv1kfe92t8nf07vf6g5ao2m0mf.apps.googleusercontent.com,452943907676-vf096glumrms1bna4dcjhrtjo61f5kd1.apps.googleusercontent.com,452943907676-e39h1tgethjivr4eg5ao2n4i0hg2245d.apps.googleusercontent.com,452943907676-b3ekb99d8i5jgsbue2ndhc0hqqtmmf9q.apps.googleusercontent.com"
   },
 
   // The social layer. Nothing a user owns is stored here — see docs/PLAN.md.
