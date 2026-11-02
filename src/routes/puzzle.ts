@@ -27,19 +27,20 @@ puzzle.post('/puzzle/played', requireAuth, async (c) => {
   }
   const me = c.get('profileId');
   const db = c.env.DB;
-  await db.batch([
-    db
-      .prepare('INSERT OR IGNORE INTO puzzle_days (profile_id, day, won, tries, streak) VALUES (?, ?, ?, ?, ?)')
-      .bind(me, day, won ? 1 : 0, Math.min(Math.max(tries as number, 0), MAX_TRIES), Math.min(Math.max(streak as number, 0), 100000)),
-    db.prepare("DELETE FROM puzzle_days WHERE profile_id = ? AND day < date('now', '-90 days')").bind(me),
-  ]);
+  // KEPT, NOT TRIMMED (2.2.2). These rows are what gives a wiped phone its
+  // streak back, so a 90-day trim would cap every restored streak at 90. About
+  // 100 bytes a day played; deleted with the account.
+  await db
+    .prepare('INSERT OR IGNORE INTO puzzle_days (profile_id, day, won, tries, streak) VALUES (?, ?, ?, ?, ?)')
+    .bind(me, day, won ? 1 : 0, Math.min(Math.max(tries as number, 0), MAX_TRIES), Math.min(Math.max(streak as number, 0), 100000))
+    .run();
   return c.json({ ok: true });
 });
 
 /*
  * THE DAYS BACK (2.2.2). A phone that was wiped or replaced starts with no
  * history and so no streak; it asks for the days this server already holds
- * (the last 90) and fills its own gaps. Only what the phone itself sent.
+ * and fills its own gaps. Only what the phone itself sent.
  */
 puzzle.get('/puzzle/played', requireAuth, async (c) => {
   const { results } = await c.env.DB.prepare(
