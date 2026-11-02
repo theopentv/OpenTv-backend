@@ -79,10 +79,12 @@ export const requireAuth = createMiddleware<App>(async (c, next) => {
       .run()
       .then((r) => {
         // The first open of the day, and only that one, also goes in the day
-        // log the dashboard steps back through -- see 0038. Pruned to 90 days,
-        // per member, so it never needs a job of its own.
+        // log the dashboard steps back through -- see 0038. Pruned per member,
+        // so it never needs a job of its own: 500 days since 2 Nov 2026 (was
+        // 90), so the dashboard can set a month against the same one a year
+        // ago. A row is a member and a date, never what they did.
         if (!r.meta.changes) return;
-        const cutoff = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+        const cutoff = new Date(Date.now() - 500 * 86400000).toISOString().slice(0, 10);
         return c.env.DB.batch([
           c.env.DB.prepare('INSERT OR IGNORE INTO profile_days (profile_id, day) VALUES (?, ?)').bind(session.profileId, today),
           c.env.DB.prepare('DELETE FROM profile_days WHERE profile_id = ? AND day < ?').bind(session.profileId, cutoff),
