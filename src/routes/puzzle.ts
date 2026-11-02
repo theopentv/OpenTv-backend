@@ -20,18 +20,36 @@ puzzle.post('/puzzle/played', requireAuth, async (c) => {
   const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
   const day = typeof body?.day === 'string' ? body.day : '';
   const { won, tries, streak } = body ?? {};
-  const distance = Math.abs(Date.parse(`${day}T12:00:00Z`) - Date.now());
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !(distance < 2 * 864e5)) return fail(c, 400, 'invalid_body', 'Bad day.');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return fail(c, 400, 'invalid_body', 'Bad day.');
   if (typeof won !== 'boolean' || !Number.isInteger(tries) || !Number.isInteger(streak)) {
     return fail(c, 400, 'invalid_body', 'Bad result.');
   }
   const me = c.get('profileId');
   const db = c.env.DB;
+  /*
+   * A far day only as a MAKE-UP (2.2.2): a day granted with tries -2 because
+   * our crash cost it (L8X, Nov 2026) is played later from the archive, and
+   * its result replaces the grant. Any other far day is still refused.
+   */
+  const distance = Math.abs(Date.parse(`${day}T12:00:00Z`) - Date.now());
+  if (!(distance < 2 * 864e5)) {
+    const grant = await db
+      .prepare('SELECT 1 FROM puzzle_days WHERE profile_id = ? AND day = ? AND tries = -2')
+      .bind(me, day)
+      .first();
+    if (!grant) return fail(c, 400, 'invalid_body', 'Bad day.');
+  }
   // KEPT, NOT TRIMMED (2.2.2). These rows are what gives a wiped phone its
   // streak back, so a 90-day trim would cap every restored streak at 90. About
   // 100 bytes a day played; deleted with the account.
+  // First write of a day wins, except over a make-up grant, which a real
+  // result replaces.
   await db
-    .prepare('INSERT OR IGNORE INTO puzzle_days (profile_id, day, won, tries, streak) VALUES (?, ?, ?, ?, ?)')
+    .prepare(
+      `INSERT INTO puzzle_days (profile_id, day, won, tries, streak) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (profile_id, day) DO UPDATE SET won = excluded.won, tries = excluded.tries, streak = excluded.streak
+       WHERE puzzle_days.tries < 0`,
+    )
     .bind(me, day, won ? 1 : 0, Math.min(Math.max(tries as number, 0), MAX_TRIES), Math.min(Math.max(streak as number, 0), 100000))
     .run();
   return c.json({ ok: true });

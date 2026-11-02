@@ -37,6 +37,20 @@ describe('POST /v1/puzzle/played', () => {
   });
 });
 
+describe('make-up days', () => {
+  it('a granted far day can be played later and its result replaces the grant; others stay refused', async () => {
+    const old = '2026-09-01';
+    raw.prepare("INSERT INTO puzzle_days VALUES ('p1', ?, 0, -2, 0)").run(old);
+    expect((await post({ day: old, won: true, tries: 2, streak: 5 })).status).toBe(200);
+    expect(rows().find((r) => r.day === old)).toMatchObject({ won: 1, tries: 2 });
+    expect((await post({ day: '2026-09-02', won: true, tries: 2, streak: 5 })).status).toBe(400);
+    // a real day is still first-write-wins
+    await post({ day, won: true, tries: 3, streak: 1 });
+    await post({ day, won: false, tries: 6, streak: 1 });
+    expect(rows().find((r) => r.day === day)).toMatchObject({ won: 1, tries: 3 });
+  });
+});
+
 describe('GET /v1/puzzle/played', () => {
   it('gives a wiped phone its own days back, and nobody else\'s', async () => {
     await post({ day, won: true, tries: 2, streak: 1 });
