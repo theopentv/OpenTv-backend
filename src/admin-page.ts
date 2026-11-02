@@ -570,7 +570,8 @@ function grantCell(handle) {
   ).join('');
   return '<div class="plusbox"><select data-h="' + handle + '">' + opts + '</select>' +
     '<button data-give="' + handle + '">Give</button>' +
-    '<button class="more" data-offer="' + handle + '">Give offer</button></div>';
+    '<button class="more" data-offer="' + handle + '">Give offer</button>' +
+    '<button class="more" data-makeup="' + handle + '">Make-up days</button></div>';
 }
 
 /**
@@ -677,6 +678,37 @@ function wireOffer() {
       const out = await res.json();
       if (!res.ok) throw new Error(out.error?.message || 'failed');
       alert(h === 0 ? 'Ended ' + out.ended + ' offer(s).' : 'Offer ' + out.offer_id + ' runs until ' + baghdad(out.ends_at) + '.');
+    } catch (err) {
+      alert(String(err.message || err));
+    }
+    btn.disabled = false;
+  });
+}
+
+/* MAKE-UP DAYS (2.2.2): days our crash cost somebody's puzzle streak. They
+   hold the streak at once and can be played from their archive, free. */
+function wireMakeup() {
+  $('users').addEventListener('click', async (e) => {
+    const btn = e.target.closest('button[data-makeup]');
+    if (!btn) return;
+    const handle = btn.getAttribute('data-makeup');
+    const yesterday = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+    const from = prompt('Make-up days for @' + handle + ': first day (YYYY-MM-DD)', yesterday);
+    if (!from) return;
+    const to = prompt('Last day (YYYY-MM-DD). Days they already played are left alone.', yesterday);
+    if (!to) return;
+    if (!confirm('Give @' + handle + ' make-up days from ' + from + ' to ' + to + '?')) return;
+    btn.disabled = true;
+    try {
+      const res = await fetch('/v1/admin/users/' + encodeURIComponent(handle) + '/makeup', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: from.trim(), to: to.trim() }),
+      });
+      const out = await res.json();
+      if (!res.ok) throw new Error(out.error?.message || 'failed');
+      alert('Added ' + out.added + ' make-up day(s). They show the next time @' + handle + ' opens the app.');
     } catch (err) {
       alert(String(err.message || err));
     }
@@ -1653,6 +1685,7 @@ $('out').addEventListener('click', async () => {
 // the listener lives on the table rather than on the buttons inside it.
 wirePlus();
 wireOffer();
+wireMakeup();
 wireMore();
 wireMessage();
 load();

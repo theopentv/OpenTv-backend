@@ -62,6 +62,21 @@ describe('GET /v1/puzzle/played', () => {
   });
 });
 
+describe('POST /v1/admin/users/:handle/makeup', () => {
+  it('fills the range with make-up days, leaves played days alone, and is the dashboard\'s alone', async () => {
+    const ago = (n: number) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+    raw.prepare("INSERT INTO puzzle_days VALUES ('p1', ?, 1, 3, 2)").run(ago(2));
+    env = { ...env, ADMIN_EMAIL: 'me@example.com', ADMIN_PASSWORD: 'a-long-one' };
+    const login = await call(env, 'POST', '/v1/admin/login', { body: { email: 'me@example.com', password: 'a-long-one' } });
+    const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+    const res = await call(env, 'POST', '/v1/admin/users/mahmood/makeup', { headers: { Cookie: cookie }, body: { from: ago(3), to: ago(1) } });
+    expect(res.json).toEqual({ added: 2 });
+    expect(rows().find((r) => r.day === ago(2))).toMatchObject({ tries: 3 });
+    expect(rows().filter((r) => r.tries === -2)).toHaveLength(2);
+    expect((await call(env, 'POST', '/v1/admin/users/mahmood/makeup', { body: { from: ago(3), to: ago(1) } })).status).toBe(401);
+  });
+});
+
 describe('GET /v1/admin/puzzle', () => {
   it('counts live streaks, and a streak left two days ago is not one', async () => {
     const put = raw.prepare('INSERT INTO puzzle_days (profile_id, day, won, tries, streak) VALUES (?, ?, 1, 3, ?)');

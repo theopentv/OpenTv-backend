@@ -1187,6 +1187,39 @@ const MAX_OFFER_HOURS = 24 * 30;
  * `hours: 0` ends a running offer NOW, the only way to undo a mistake; it
  * shortens, never lengthens.
  */
+/*
+ * MAKE-UP DAYS (2.2.2). Days our crash cost a member's puzzle streak, given
+ * back from the dashboard: each day in the range they have no row for gets one
+ * with tries -2, which the phone draws as ice and lets them play from the
+ * archive (see routes/puzzle.ts). A day they played is never touched.
+ */
+admin.post('/admin/users/:handle/makeup', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const body = (await c.req.json().catch(() => null)) as { from?: unknown; to?: unknown } | null;
+  const from = typeof body?.from === 'string' ? body.from : '';
+  const to = typeof body?.to === 'string' ? body.to : '';
+  const re = /^\d{4}-\d{2}-\d{2}$/;
+  const today = new Date().toISOString().slice(0, 10);
+  if (!re.test(from) || !re.test(to) || from > to || to >= today) {
+    return fail(c, 400, 'invalid_body', 'from and to must be YYYY-MM-DD, from <= to, both before today.');
+  }
+  const days: string[] = [];
+  for (let t = Date.parse(`${from}T00:00:00Z`); t <= Date.parse(`${to}T00:00:00Z`); t += 864e5) {
+    days.push(new Date(t).toISOString().slice(0, 10));
+    if (days.length > 500) return fail(c, 400, 'invalid_body', 'At most 500 days at once.');
+  }
+  const row = await c.env.DB.prepare('SELECT id FROM profiles WHERE handle_lower = ? AND deleted_at IS NULL')
+    .bind(c.req.param('handle').toLowerCase())
+    .first<{ id: string }>();
+  if (!row) return fail(c, 404, 'not_found', 'No such profile.');
+  const put = c.env.DB.prepare('INSERT OR IGNORE INTO puzzle_days (profile_id, day, won, tries, streak) VALUES (?, ?, 0, -2, 0)');
+  const res = await c.env.DB.batch(days.map((d) => put.bind(row.id, d)));
+  const added = res.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
+  return c.json({ added }, 200, { 'Cache-Control': 'no-store' });
+});
+
 admin.post('/admin/users/:handle/offer', async (c) => {
   if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
     return fail(c, 401, 'unauthenticated', 'Sign in first.');
