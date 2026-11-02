@@ -35,3 +35,17 @@ puzzle.post('/puzzle/played', requireAuth, async (c) => {
   ]);
   return c.json({ ok: true });
 });
+
+/*
+ * THE DAYS BACK (2.2.2). A phone that was wiped or replaced starts with no
+ * history and so no streak; it asks for the days this server already holds
+ * (the last 90) and fills its own gaps. Only what the phone itself sent.
+ */
+puzzle.get('/puzzle/played', requireAuth, async (c) => {
+  const { results } = await c.env.DB.prepare(
+    'SELECT day, won, tries FROM puzzle_days WHERE profile_id = ? ORDER BY day',
+  )
+    .bind(c.get('profileId'))
+    .all<{ day: string; won: number; tries: number }>();
+  return c.json({ days: results.map((r) => ({ day: r.day, won: r.won === 1, tries: r.tries })) });
+});

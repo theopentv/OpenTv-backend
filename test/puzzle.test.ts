@@ -37,6 +37,17 @@ describe('POST /v1/puzzle/played', () => {
   });
 });
 
+describe('GET /v1/puzzle/played', () => {
+  it('gives a wiped phone its own days back, and nobody else\'s', async () => {
+    await post({ day, won: true, tries: 2, streak: 1 });
+    insertProfile(raw, 'p2', 'sara');
+    raw.prepare("INSERT INTO puzzle_days VALUES ('p2', ?, 0, 6, 4)").run(day);
+    const res = await call(env, 'GET', '/v1/puzzle/played', { token });
+    expect(res.json).toEqual({ days: [{ day, won: true, tries: 2 }] });
+    expect((await call(env, 'GET', '/v1/puzzle/played')).status).toBe(401);
+  });
+});
+
 describe('GET /v1/admin/puzzle', () => {
   it('counts live streaks, and a streak left two days ago is not one', async () => {
     const put = raw.prepare('INSERT INTO puzzle_days (profile_id, day, won, tries, streak) VALUES (?, ?, 1, 3, ?)');
