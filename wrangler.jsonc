@@ -142,7 +142,7 @@
     // The OAuth library's store for Claude and ChatGPT (2.3.0): registered
     // clients, grants, hashed tokens, props encrypted under the token. Its own
     // namespace so `CACHE` can be flushed without signing everybody out.
-    // ⚠️ PLACEHOLDER — create it with `wrangler kv namespace create OAUTH_KV`
+    // created 3 Nov 2026 with `wrangler kv namespace create OAUTH_KV`
     // and paste the id here. Deploy fails until then.
     { "binding": "OAUTH_KV", "id": "252fdc03253d46cabe0bc2f38e413efc" }
   ],
