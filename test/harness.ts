@@ -198,28 +198,46 @@ export function fakeBucket(): R2Bucket & { stored: Map<string, Stored> } {
   } as unknown as R2Bucket & { stored: Map<string, Stored> };
 }
 
-/** The smallest KV that behaves: get/put/delete over a Map, per environment. */
+/** The smallest KV that behaves: get/put/delete/list over a Map, per environment. */
 export function kv(): KVNamespace {
   const store = new Map<string, string>();
+  // Metadata and `list` arrived with the OAuth library (2.3.0), which finds a
+  // member's grants by listing a prefix and reading each key's metadata. A
+  // stub without them answered "no connections" for everybody.
+  const meta = new Map<string, unknown>();
   return {
     // The TYPE ARGUMENT MATTERS. Real KV parses when asked for 'json' and
     // returns a string otherwise; a stub that always returns the string makes
     // every `get(key, 'json')` read as a miss — which silently disabled the
     // rate limiters under test while they worked perfectly in production.
-    async get(key: string, type?: string) {
+    // Both spellings: `get(k, 'json')` here, `get(k, { type: 'json' })` in the
+    // OAuth library.
+    async get(key: string, type?: string | { type?: string }) {
+      const t = typeof type === 'object' ? type?.type : type;
       const raw = store.get(key) ?? null;
-      if (raw === null || type !== 'json') return raw;
+      if (raw === null || t !== 'json') return raw;
       try {
         return JSON.parse(raw);
       } catch {
         return null;
       }
     },
-    async put(key: string, value: string) {
+    async put(key: string, value: string, opts?: { metadata?: unknown }) {
       store.set(key, value);
+      if (opts?.metadata !== undefined) meta.set(key, opts.metadata);
+      else meta.delete(key);
     },
     async delete(key: string) {
       store.delete(key);
+      meta.delete(key);
+    },
+    async list(opts?: { prefix?: string }) {
+      const prefix = opts?.prefix ?? '';
+      const keys = [...store.keys()]
+        .filter((k) => k.startsWith(prefix))
+        .sort()
+        .map((name) => ({ name, ...(meta.has(name) ? { metadata: meta.get(name) } : {}) }));
+      return { keys, list_complete: true, cacheStatus: null };
     },
   } as unknown as KVNamespace;
 }

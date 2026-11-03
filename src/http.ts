@@ -84,6 +84,10 @@ export type ErrorCode =
   | 'room_full'
   // The live room's socket route asked for without a WebSocket upgrade.
   | 'upgrade_required'
+  // A code for linking Claude or ChatGPT, asked for with no backup on the
+  // server. The MCP server reads that backup and nothing else, so the app's
+  // answer is "turn on OpenTV Backup first", not the paywall and not a retry.
+  | 'no_backup'
   | 'internal';
 
 /** Every failure response in the API. Success responses are the bare resource. */

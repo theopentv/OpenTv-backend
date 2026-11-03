@@ -1,6 +1,6 @@
 import { createMiddleware } from 'hono/factory';
 import type { Context } from 'hono';
-import type { App } from '@/env';
+import type { App, Env } from '@/env';
 import { plusOn } from '@/pure';
 import { fail } from '@/http';
 import { verifyScoped } from '@/session';
@@ -135,11 +135,17 @@ export const requireVerified = createMiddleware<App>(async (c, next) => {
  * never receives.
  */
 export async function hasPlus(c: Context<App>): Promise<boolean> {
-  if (c.env.SELF_HOSTED) return true;
-  const row = await c.env.DB.prepare(
+  return plusFor(c.env, c.get('profileId'));
+}
+
+/** The same question without a request context — the MCP server asks it on
+ *  every tool call, where the profile comes from an OAuth grant, not a session. */
+export async function plusFor(env: Env, profileId: string): Promise<boolean> {
+  if (env.SELF_HOSTED) return true;
+  const row = await env.DB.prepare(
     'SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL',
   )
-    .bind(c.get('profileId'))
+    .bind(profileId)
     .first<{ is_plus: number | null; plus_until: string | null }>();
   return row ? plusOn(row, new Date().toISOString()) : false;
 }

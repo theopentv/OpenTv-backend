@@ -12,7 +12,7 @@ FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
  && rm -rf /var/lib/apt/lists/*
-COPY package.json package-lock.json* ./
+COPY package.json package-lock.json* .npmrc ./
 # `--omit=dev` would drop tsx, which is what runs the server. The dev/prod split
 # in a repository whose "build" is "run the source" is not a useful one.
 RUN npm install --no-audit --no-fund

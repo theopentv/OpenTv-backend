@@ -1,5 +1,5 @@
 /**
- * FORKING THIS? Five lines are ours and have to become yours:
+ * FORKING THIS? Seven lines are ours and have to become yours:
  *
  *   routes[]            the domain patterns — or delete the block entirely and
  *                       the Worker answers on its own workers.dev address
@@ -8,6 +8,8 @@
  *                       sign-in off (the app hides the button either way)
  *   d1_databases[0].database_id   from `wrangler d1 create opentv`
  *   kv_namespaces[0].id           from `wrangler kv namespace create CACHE`
+ *   kv_namespaces[1].id           from `wrangler kv namespace create OAUTH_KV`
+ *   vars.MCP_ORIGIN     your Worker's public origin (Claude/ChatGPT connect to it + /mcp)
  *
  * The ids left here are this deployment's. They are identifiers, not
  * credentials — nothing reaches them without a Cloudflare API token for this
@@ -20,12 +22,20 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "opentv-api",
-  "main": "src/index.ts",
+  // src/worker.ts puts the OAuth provider (Claude and ChatGPT, 2.3.0) in front
+  // of src/index.ts, which is still the whole API. See the header of worker.ts.
+  "main": "src/worker.ts",
   // 2026-07-30 is the installed workerd's ceiling (1.20260730.1); a later date
   // makes `wrangler dev` error on every start.
   "compatibility_date": "2026-07-30",
   // node:buffer, for base64url handling of JWT segments in Step 1.
-  "compatibility_flags": ["nodejs_compat"],
+  // global_fetch_strictly_public (2.3.0): the OAuth library fetches Client ID
+  // Metadata Documents from URLs a client names (ChatGPT signs in that way);
+  // this keeps those fetches on the public internet, never same-zone routing.
+  // Without it the library stops advertising CIMD and ChatGPT cannot connect.
+  // It applies to every outbound fetch, and every one this Worker makes is to a
+  // public API (Apple, Google, RevenueCat, Resend, CommsUni, TMDB), so nothing else changes.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "observability": { "enabled": true },
 
   /*
@@ -90,6 +100,11 @@
     // "off" closes email SIGN-UP while 1.3.1 is in review — see env.ts. Sign-in
     // stays open, and Apple and Google are unaffected. Set back to "on".
     "EMAIL_SIGNUP": "on",
+    // The address people paste into Claude and ChatGPT is this + "/mcp", and
+    // every OAuth token is bound to it, so it must be the public origin exactly
+    // (no trailing slash). For `wrangler dev`, override in .dev.vars:
+    // MCP_ORIGIN=http://localhost:8787
+    "MCP_ORIGIN": "https://opentv-api.mahmoodbashar08.workers.dev",
     // Comma-separated: iOS, Android and **Web** client ids. Android sign-in
     // returns the *web* client id as `aud`, which is the classic trap. Filled
     // in when Google sign-in is wired up in the app; empty means every Google
@@ -123,7 +138,13 @@
 
   // Caches provider JWKS so token verification does not fetch on every request.
   "kv_namespaces": [
-    { "binding": "CACHE", "id": "b87a5a9f72d345b5931ac00e34d17c61" }
+    { "binding": "CACHE", "id": "b87a5a9f72d345b5931ac00e34d17c61" },
+    // The OAuth library's store for Claude and ChatGPT (2.3.0): registered
+    // clients, grants, hashed tokens, props encrypted under the token. Its own
+    // namespace so `CACHE` can be flushed without signing everybody out.
+    // ⚠️ PLACEHOLDER — create it with `wrangler kv namespace create OAUTH_KV`
+    // and paste the id here. Deploy fails until then.
+    { "binding": "OAUTH_KV", "id": "PLACEHOLDER_OAUTH_KV_ID" }
   ],
 
   // Rescued TV Time comment photos. TV Time's CDN

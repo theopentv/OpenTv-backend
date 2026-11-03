@@ -81,6 +81,17 @@ The month is opt-in only: nothing on the dashboard gives it, somebody accepts
 it in the app. (`free_month_via`, migration 0064, is left over from a bulk gift
 that was removed before it was deployed; nothing reads or writes it.)
 
+## Claude and ChatGPT (MCP, 2.3.0, Plus)
+
+`<origin>/mcp` is a read-only MCP server over the member's OWN backup ZIP in
+R2, parsed in memory when a tool is called. Nothing derived is stored: no
+table, no per-user database; no backup means every tool says "turn on Backup".
+`src/worker.ts` (wrangler's entry) puts the OAuth provider in front of the API;
+`/authorize` asks for a six-digit code from `POST /v1/mcp/code` in the app
+instead of a web sign-in. Needs a KV namespace bound as `OAUTH_KV`, `MCP_ORIGIN`
+set to the public origin, and `global_fetch_strictly_public` (for ChatGPT's
+Client ID Metadata Document). Not available self-hosted.
+
 ## Read before changing anything
 
 - [`docs/PLAN.md`](docs/PLAN.md) — decisions, reasoning, build order, blockers

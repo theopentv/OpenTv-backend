@@ -20,6 +20,12 @@ import { plusOn, readDevice } from '@/pure';
  * watch-history TABLE: this server still cannot answer "what did they watch",
  * because the answer is a ZIP it never opens.
  *
+ * ONE EXCEPTION SINCE 2.3.0, and it is the owner's: the MCP server
+ * (`src/mcp/`) opens THIS person's ZIP when THIS person asks Claude or ChatGPT
+ * about their own history, after they linked it with a code from their phone.
+ * It parses in memory per question and stores nothing derived — still no table.
+ * If this is ever encrypted on the device, that feature is what has to change.
+ *
  * ⚠️ STORED AS SENT, NOT ENCRYPTED BY US. The bytes travel over TLS and sit in
  * R2 at rest, but a copy of somebody's library is on this server, readable by
  * whoever holds the R2 credentials — which is a real change from "your library
@@ -200,6 +206,17 @@ function pickBest(all: StoredBackup[]): StoredBackup | null {
     if (be !== bestEp) return be > bestEp ? b : best;
     return (b.updatedAt ?? '') > (best.updatedAt ?? '') ? b : best;
   });
+}
+
+/**
+ * The R2 key of the backup a restore would get — the fullest, see `pickBest`.
+ * Exported for the MCP server (`src/mcp/`), which reads the same object a
+ * restore would, so "what Claude sees" and "what a new phone gets" are one copy.
+ */
+export async function bestBackupKey(bucket: R2Bucket, profileId: string): Promise<string | null> {
+  const best = pickBest(await listBackups(bucket, profileId));
+  if (!best) return null;
+  return best.device ? keyFor(profileId, best.device) : legacyKeyFor(profileId);
 }
 
 /** Plus, including the self-hosted case — see `hasPlus` in `middleware.ts`. */

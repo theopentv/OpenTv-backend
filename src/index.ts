@@ -36,6 +36,7 @@ import { movieNames } from '@/routes/movie-names';
 import { links } from '@/routes/links';
 import { translate } from '@/routes/translate';
 import { rooms } from '@/routes/rooms';
+import { mcp, mcpAuthorize } from '@/routes/mcp';
 
 export type { Env } from '@/env';
 // The live room's Durable Object class. wrangler finds it by this export.
@@ -147,6 +148,7 @@ v1.route('/', movieNames);
 v1.route('/', dev);
 v1.route('/', sharedLists);
 v1.route('/', rooms);
+v1.route('/', mcp);
 v1.route('/', reports);
 v1.route('/', blocks);
 v1.route('/', follows);
@@ -197,6 +199,15 @@ app.get('/', (c) =>
  * `routes/web.ts`.
  */
 app.route('/', web);
+
+/*
+ * The page Claude and ChatGPT open to link an account (`routes/mcp.ts`). At the
+ * root because OAuth clients are sent to the `authorization_endpoint` the
+ * metadata names, and a browser page has no business under /v1. The MCP
+ * endpoint itself, /mcp, never reaches this app: `src/worker.ts` hands it to
+ * the OAuth provider first.
+ */
+app.route('/', mcpAuthorize);
 
 app.route('/v1', v1);
 /**

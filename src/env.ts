@@ -1,3 +1,5 @@
+import type { OAuthHelpers } from '@cloudflare/workers-oauth-provider';
+
 /**
  * The Worker's bindings and the per-request variables handlers set.
  *
@@ -168,6 +170,23 @@ export type Env = {
    * answers `not_configured`. The app then never draws the pill.
    */
   ROOMS?: DurableObjectNamespace;
+
+  /**
+   * OpenTV inside Claude and ChatGPT (2.3.0) — see `src/mcp/` and `src/worker.ts`.
+   *
+   * `OAUTH_KV` is the OAuth library's own store: clients, grants, hashed
+   * tokens, props encrypted under the token. Nothing of the library in it.
+   * `OAUTH_PROVIDER` is not a binding: `OAuthProvider` puts its helpers on the
+   * env it hands the Hono app, which is how `/authorize` and the connection
+   * routes reach them. Both absent under Node (`selfhost/`, the tests unless a
+   * suite adds them), where every MCP route answers `not_configured`.
+   *
+   * `MCP_ORIGIN` is the public origin the connector URL is built on. Tokens
+   * are bound to `<origin>/mcp`, so it has to be the address people paste.
+   */
+  OAUTH_KV?: KVNamespace;
+  OAUTH_PROVIDER?: OAuthHelpers;
+  MCP_ORIGIN?: string;
 };
 
 /** What `requireAuth` puts on the context. */
