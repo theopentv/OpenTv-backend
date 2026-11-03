@@ -144,7 +144,7 @@
     // namespace so `CACHE` can be flushed without signing everybody out.
     // ⚠️ PLACEHOLDER — create it with `wrangler kv namespace create OAUTH_KV`
     // and paste the id here. Deploy fails until then.
-    { "binding": "OAUTH_KV", "id": "PLACEHOLDER_OAUTH_KV_ID" }
+    { "binding": "OAUTH_KV", "id": "252fdc03253d46cabe0bc2f38e413efc" }
   ],
 
   // Rescued TV Time comment photos. TV Time's CDN
