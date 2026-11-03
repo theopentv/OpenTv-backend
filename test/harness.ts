@@ -173,9 +173,12 @@ export function fakeBucket(): R2Bucket & { stored: Map<string, Stored> } {
         customMetadata: meta.custom ?? {},
       } as never;
     },
-    async delete(key: string) {
-      stored.delete(key);
-      bytes.delete(key);
+    // An array too, as R2 takes one — a backup's pictures go in one call.
+    async delete(key: string | string[]) {
+      for (const k of Array.isArray(key) ? key : [key]) {
+        stored.delete(k);
+        bytes.delete(k);
+      }
     },
     // `list` arrived with per-device backup keys. Before that the routes only
     // ever addressed one known key per profile; now they have to ask what is

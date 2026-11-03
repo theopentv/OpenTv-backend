@@ -293,3 +293,38 @@ describe('one backup per device', () => {
     expect(meta.json.exists).toBe(false);
   });
 });
+
+describe('backup pictures, beside the ZIP', () => {
+  const GIF = new Uint8Array([0x47, 0x49, 0x46, 0x38, 9, 9]);
+  const put = (name: string, t = token) => callBytes(env, 'PUT', `/v1/backup/images/${name}`, GIF, { token: t });
+
+  it('keeps one per name under the profile, Plus to write, anyone of theirs to read', async () => {
+    expect((await put('comment-img-1.gif')).status).toBe(402);
+    makePlus('p1');
+    expect((await put('comment-img-1.gif')).status).toBe(200);
+    expect([...bucket.stored.keys()]).toEqual(['backup-images/p1/comment-img-1.gif']);
+    const back = await callBytes(env, 'GET', '/v1/backup/images/comment-img-1.gif', undefined, { token });
+    expect([...back.bytes]).toEqual([...GIF]);
+    // another profile asking for the same name gets its own (none), never p1's
+    const other = await tokenFor(env, 'p2');
+    expect((await callBytes(env, 'GET', '/v1/backup/images/comment-img-1.gif', undefined, { token: other })).status).toBe(404);
+  });
+
+  it('refuses a name that is a path', async () => {
+    makePlus('p1');
+    expect((await put('..%2Fp2%2Fx.gif')).status).toBe(400);
+    expect((await put('.hidden')).status).toBe(400);
+    expect(bucket.stored.size).toBe(0);
+  });
+
+  it('is never listed as a device, and goes when the backup is deleted', async () => {
+    makePlus('p1');
+    await callBytes(env, 'POST', '/v1/backup', ZIP, { token, headers: { 'X-OpenTV-Device': 'phone' } });
+    await put('a.gif');
+    await put('b.gif');
+    const info = await call(env, 'GET', '/v1/backup/info', { token });
+    expect(info.json.devices).toHaveLength(1);
+    await call(env, 'DELETE', '/v1/backup', { token });
+    expect(bucket.stored.size).toBe(0);
+  });
+});

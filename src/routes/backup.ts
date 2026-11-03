@@ -306,6 +306,62 @@ backup.get('/backup', requireAuth, async (c) => {
   });
 });
 
+// ── the pictures, beside the ZIP ─────────────────────────────────────────────
+
+/**
+ * A backup's pictures, one object each (3 Nov). They used to ride inside the
+ * ZIP, and a member with 296 TV Time GIFs had a 540 MB one built in memory on
+ * the phone: the app froze. Now the ZIP lists the names and the phone sends each
+ * picture once. A prefix of their own, not under `backups/`, so listing a
+ * profile's devices never pages through three hundred GIFs to find two ZIPs.
+ * Opaque like the ZIP: stored as sent, never shown to anybody else.
+ */
+const imagePrefix = (profileId: string): string => `backup-images/${profileId}/`;
+
+/** One file name of the app's own making — never a path. */
+const IMAGE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+
+/** A single picture. A real TV Time GIF is a few MB; this is a guard. */
+export const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+
+backup.put('/backup/images/:name', requireAuth, async (c) => {
+  const bucket = c.env.BACKUPS;
+  if (!bucket) return fail(c, 503, 'unavailable', 'Cloud backup is not configured.');
+  if (!(await isPlus(c))) return fail(c, 402, 'plus_required', 'Cloud backup needs OpenTV Plus.');
+  const name = c.req.param('name');
+  if (!IMAGE_NAME.test(name)) return fail(c, 400, 'invalid_body', 'Not a picture name.');
+
+  const body = await c.req.arrayBuffer();
+  if (body.byteLength === 0) return fail(c, 400, 'invalid_body', 'Empty picture.');
+  if (body.byteLength > MAX_IMAGE_BYTES) return fail(c, 413, 'too_large', 'That picture is larger than this server accepts.');
+
+  await bucket.put(imagePrefix(c.get('profileId')) + name, body);
+  return c.json({ ok: true });
+});
+
+/** Not Plus-gated, like the ZIP — see the header. */
+backup.get('/backup/images/:name', requireAuth, async (c) => {
+  const bucket = c.env.BACKUPS;
+  if (!bucket) return fail(c, 503, 'unavailable', 'Cloud backup is not configured.');
+  const name = c.req.param('name');
+  if (!IMAGE_NAME.test(name)) return fail(c, 400, 'invalid_body', 'Not a picture name.');
+  const object = await bucket.get(imagePrefix(c.get('profileId')) + name);
+  if (!object) return fail(c, 404, 'not_found', 'No such picture.');
+  return new Response(object.body, {
+    headers: { 'Content-Type': 'application/octet-stream', 'Cache-Control': 'no-store' },
+  });
+});
+
+async function deleteImages(bucket: R2Bucket, profileId: string): Promise<void> {
+  let cursor: string | undefined;
+  do {
+    const page = await bucket.list({ prefix: imagePrefix(profileId), cursor });
+    const keys = page.objects.map((o) => o.key);
+    if (keys.length) await bucket.delete(keys);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+}
+
 // ── delete ───────────────────────────────────────────────────────────────────
 
 /**
@@ -330,5 +386,7 @@ backup.delete('/backup', requireAuth, async (c) => {
   for (const b of await listBackups(bucket, profileId)) {
     await bucket.delete(b.device ? keyFor(profileId, b.device) : legacyKeyFor(profileId));
   }
+  // And the pictures: "take my library off your server" includes them.
+  await deleteImages(bucket, profileId);
   return c.json({ ok: true });
 });
