@@ -5,7 +5,9 @@ import type { Env } from '@/env';
 import worker from '@/index';
 import {
   applyOps,
+  episodeDetails,
   lists,
+  NO_CHARACTER_NAME,
   parseLibrary,
   planFeeling,
   planMarkEpisode,
@@ -79,6 +81,21 @@ function backupZip({ extras = true }: { extras?: boolean } = {}): Uint8Array {
         objects: `[map[id:200 type:series] map[type:movie uuid:${U(2)}] map[type:movie uuid:${U(99)}]]`,
       },
     ]),
+    // Feelings are TV Time's emotion index + 28: 31 reflective, 39 tense, 30 sad.
+    'emotions-3-prod-episode_votes.csv': csv([
+      { vote_key: '0-1-31', series_name: 'Breaking Bad', season_number: 1, episode_number: 1 },
+      { vote_key: '0-1-39', series_name: 'Breaking Bad', season_number: 1, episode_number: 1 },
+      { vote_key: '0-1-30', series_name: 'Breaking Bad', season_number: 1, episode_number: 2 },
+    ]),
+    // TV Time's own character id, and no name.
+    'show_character_episode_vote.csv': csv([{ show_character_id: 55, tv_show_name: 'Breaking Bad', episode_season_number: 1, episode_number: 1 }]),
+    'episode_comment.csv': csv([
+      { id: 'ec-1', tv_show_name: 'Breaking Bad', episode_season_number: 1, episode_number: 1, comment: 'What a pilot', created_at: '2024-01-10 21:00:00' },
+    ]),
+    'comments-prod-comments.csv': csv([
+      { type: 'comment', entity_type: 'series', series_name: 'Breaking Bad', movie_name: '', text: 'Best show ever', created_at: '2024-02-01 10:00:00' },
+      { type: 'comment', entity_type: 'movie', series_name: '', movie_name: 'Inception', text: 'Spinning top!', created_at: '2024-06-01 23:00:00' },
+    ]),
   };
   if (extras) {
     files['_opentv_extras.json'] = JSON.stringify({
@@ -89,6 +106,7 @@ function backupZip({ extras = true }: { extras?: boolean } = {}): Uint8Array {
       ],
       movieScale: 10,
       epScale: 10,
+      epCharVotes: [{ showId: 100, season: 1, episode: 1, name: 'Jesse Pinkman', charId: null }],
     });
   }
   return zipSync(Object.fromEntries(Object.entries(files).map(([k, v]) => [k, strToU8(v)])));
@@ -159,7 +177,16 @@ describe('the backup, read', () => {
     const p = showProgress(lib, 'breaking bad');
     expect(p.found).toBe(true);
     expect('seasons' in p && p.seasons).toEqual([
-      { season: 1, episodesWatched: 2, lastWatched: '2025-03-01', lastEpisode: 1 },
+      {
+        season: 1,
+        episodesWatched: 2,
+        lastWatched: '2025-03-01',
+        lastEpisode: 1,
+        reactions: [
+          { episode: 1, feelings: ['reflective', 'tense'], favouriteCharacter: 'Jesse Pinkman' },
+          { episode: 2, feelings: ['sad'] },
+        ],
+      },
       { season: 2, episodesWatched: 1, lastWatched: '2025-02-01', lastEpisode: 1 },
     ]);
     expect(showProgress(lib, 'The Wire')).toEqual({ found: false, title: 'The Wire' });
@@ -177,6 +204,35 @@ describe('the backup, read', () => {
     const all = stats(lib);
     expect(all).toMatchObject({ episodesWatched: 5, showsWatched: 2, filmsWatched: 2, itemsWithoutRuntime: 1 });
     expect(all.ratingDistributionAllTime).toEqual({ episodes: { '3': 1, '4.5': 1 }, films: { '4': 1, '4.5': 1 } });
+    expect(all.mostFeltAllTime).toEqual([
+      { feeling: 'reflective', episodes: 1 },
+      { feeling: 'tense', episodes: 1 },
+      { feeling: 'sad', episodes: 1 },
+    ]);
+    expect(all.episodesWithFavouriteCharacter).toBe(1);
+  });
+
+  it('feelings, favourite characters and comments: read, with each comment on its target', () => {
+    expect(lib.comments).toEqual([
+      { target: 'show', title: 'Breaking Bad', showId: 100, date: '2024-02-01 10:00:00', text: 'Best show ever' },
+      { target: 'film', title: 'Inception', date: '2024-06-01 23:00:00', text: 'Spinning top!' },
+      { target: 'episode', title: 'Breaking Bad', showId: 100, season: 1, episode: 1, date: '2024-01-10 21:00:00', text: 'What a pilot' },
+    ]);
+    expect(episodeDetails(lib, 'breaking bad', 1, 1)).toEqual({
+      found: true,
+      show: 'Breaking Bad',
+      season: 1,
+      episode: 1,
+      watched: true,
+      watchDates: ['2024-01-10', '2025-03-01'],
+      rating: 4.5,
+      ratingScale: expect.any(String),
+      feelings: ['reflective', 'tense'],
+      favouriteCharacter: 'Jesse Pinkman',
+      comments: [{ date: '2024-01-10', text: 'What a pilot' }],
+    });
+    expect(episodeDetails(lib, 'Dark', 1, 1)).toMatchObject({ watched: false, rating: null, feelings: [], favouriteCharacter: null, comments: [] });
+    expect(episodeDetails(lib, 'The Wire', 1, 1)).toMatchObject({ found: false, message: expect.stringMatching(/not in this OpenTV library/) });
   });
 
   it('ratings: highest first, filtered by kind and stars', () => {
@@ -203,6 +259,10 @@ describe('the backup, read', () => {
     const old = parseLibrary(backupZip({ extras: false }));
     expect(old.films.find((f) => f.name === 'Inception')?.stars).toBe(5);
     expect(old.episodeRatings).toEqual([{ showId: 100, season: 1, episode: 1, stars: 5 }]);
+    // TV Time's CSV has only a character id: the vote is kept and said to be nameless.
+    expect(old.characters).toEqual([{ showId: 100, season: 1, episode: 1, name: null }]);
+    expect(episodeDetails(old, 'Breaking Bad', 1, 1).favouriteCharacter).toBe(NO_CHARACTER_NAME);
+    expect(old.feelings).toHaveLength(3);
   });
 });
 
@@ -644,6 +704,29 @@ describe('fresh reads: relay ops replayed over the backup', () => {
     expect(applyOps(lib, [])).toBe(lib);
   });
 
+  it('feelings and favourite characters replay; an un-mark takes both with it', () => {
+    const fresh = applyOps(lib, [
+      op(1, 'emotion', { show: 100, s: 1, e: 2, emotion: 2, on: false }),
+      op(2, 'emotion', { show: 100, s: 2, e: 1, emotion: 9, on: true }),
+      op(3, 'emotion', { show: 100, s: 2, e: 1, emotion: 9, on: true }),
+      op(4, 'charVote', { show: 100, s: 2, e: 1, name: 'Hank Schrader' }),
+      op(5, 'charVote', { show: 100, s: 1, e: 2, name: 'Saul Goodman' }),
+      op(6, 'charVote', { show: 100, s: 1, e: 2, name: null }),
+      op(7, 'unwatch', { show: 100, s: 1, e: 1 }),
+    ]);
+    expect(episodeDetails(fresh, 'Breaking Bad', 1, 2)).toMatchObject({ feelings: [], favouriteCharacter: null });
+    expect(episodeDetails(fresh, 'Breaking Bad', 2, 1)).toMatchObject({ feelings: ['thrilled'], favouriteCharacter: 'Hank Schrader' });
+    // Un-marked: no watch, rating, feelings or favourite left; the comment stays.
+    expect(episodeDetails(fresh, 'Breaking Bad', 1, 1)).toMatchObject({
+      watched: false,
+      rating: null,
+      feelings: [],
+      favouriteCharacter: null,
+      comments: [{ text: 'What a pilot' }],
+    });
+    expect(lib.feelings).toHaveLength(3);
+  });
+
   it('a show first met as a tick appears under its id until named', () => {
     const fresh = applyOps(lib, [op(1, 'watch', { show: 777, s: 1, e: 1, at: '2026-11-01 10:00:00' }), op(2, 'showAdd', { show: 777, name: 'Severance', poster: null })]);
     expect(showProgress(fresh, 'severance')).toMatchObject({ found: true, episodesWatched: 1 });
@@ -678,7 +761,7 @@ describe('the MCP server: annotations, gates, relay, usage', () => {
 
   it('read tools say read-only; write tools do not, and un-marking says destructive', () => {
     const all = tools();
-    for (const n of ['search_library', 'watch_history', 'show_progress', 'stats', 'ratings', 'lists']) expect(all[n]!.annotations).toMatchObject({ readOnlyHint: true });
+    for (const n of ['search_library', 'watch_history', 'show_progress', 'episode_details', 'stats', 'ratings', 'lists']) expect(all[n]!.annotations).toMatchObject({ readOnlyHint: true });
     for (const n of ['mark_episode_watched', 'mark_movie_watched', 'rate', 'add_to_watchlist', 'set_episode_feeling']) {
       expect(all[n]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
     }
@@ -708,6 +791,7 @@ describe('the MCP server: annotations, gates, relay, usage', () => {
 
     const read = JSON.parse((await run('show_progress', { title: 'dark' })).text);
     expect(read).toMatchObject({ changesSince: 1, episodesWatched: 1 });
+    expect(JSON.parse((await run('episode_details', { show: 'Dark', season: 1, episode: 1 })).text)).toMatchObject({ watched: true, watchDates: ['2026-11-01'] });
     // And doing it twice is refused, because the fresh read already has it.
     expect((await run('mark_episode_watched', { show: 'Dark', season: 1, episode: 1 })).text).toMatch(/already marked watched/);
   });

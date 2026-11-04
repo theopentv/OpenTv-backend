@@ -8,6 +8,7 @@ import { bestBackupKey } from '@/routes/backup';
 import { RETAIN_DAYS } from '@/routes/sync';
 import {
   applyOps,
+  episodeDetails,
   FEELINGS,
   lists,
   parseLibrary,
@@ -264,6 +265,7 @@ const TOOL_TITLES: Record<string, string> = {
   search_library: 'Search my library',
   watch_history: 'What I watched',
   show_progress: 'Show progress',
+  episode_details: 'Episode details',
   stats: 'My stats',
   ratings: 'My ratings',
   lists: 'My watchlist and lists',
@@ -319,7 +321,8 @@ export function buildServer(env: Env, profileId: string, caller: Caller = { canW
   register(
     'show_progress',
     {
-      description: "How far the user is in one show: per season, episodes watched and the last episode watched with its date.",
+      description:
+        "How far the user is in one show: per season, episodes watched and the last episode watched with its date, plus `reactions`: the feelings and favourite character the user picked per episode. For one episode in full (comments too), use episode_details.",
       inputSchema: z.object({ title: z.string().min(1).describe('The show title, or part of it') }),
       annotations: READ_ONLY,
     },
@@ -327,10 +330,21 @@ export function buildServer(env: Env, profileId: string, caller: Caller = { canW
   );
 
   register(
+    'episode_details',
+    {
+      description:
+        `Everything the user recorded about one episode: whether and when they watched it (every watch date), their rating (1-5 stars), the feelings they picked (${FEELINGS.join(', ')}), their favourite character, and their own comments on it with dates. Use for "how did I feel about…", "who was my favourite in…", "what did I say about…".`,
+      inputSchema: z.object({ show: z.string().min(1).describe('The show title'), season: season.describe('Season number'), episode: episode.describe('Episode number') }),
+      annotations: READ_ONLY,
+    },
+    async ({ show, season: s, episode: e }) => ask((lib) => episodeDetails(lib, show, s, e)),
+  );
+
+  register(
     'stats',
     {
       description:
-        "Totals for all time or one calendar year: episodes, shows, films, hours where runtime is known, the top 10 shows by episodes watched, and the user's rating distribution.",
+        "Totals for all time or one calendar year: episodes, shows, films, hours where runtime is known, the top 10 shows by episodes watched, the user's rating distribution, and their most-felt episode feelings (all time).",
       inputSchema: z.object({ year: z.number().int().min(1900).max(2100).optional().describe('A year, or omit for all time') }),
       annotations: READ_ONLY,
     },

@@ -3,6 +3,9 @@ import {
   exportReader,
   listEntries,
   movieNamesByUuid,
+  readCharacterVotes,
+  readComments,
+  readEpisodeEmotions,
   readEpisodeRatings,
   readEpisodeWatches,
   readFavorites,
@@ -27,9 +30,13 @@ import {
  * WHAT IS NOT HERE, AND WHY. Private notes: the server copy of a backup is
  * built without them (`buildTvTimeZip({ notes: false })` in the app's
  * `cloud-backup.ts`), so
- * there is nothing to find and nothing to look for. Comments, emotions and
- * favourite characters are in the ZIP but no tool asks for them yet; they are
- * one reader away when somebody wants them.
+ * there is nothing to find and nothing to look for. The sidecar's `notes` key
+ * is never read here either, should a backup ever carry one.
+ *
+ * FAVOURITE CHARACTERS MAY HAVE NO NAME. TV Time's CSV holds only its own
+ * character id; the sidecar's `epCharVotes` carries the name OpenTV knows. A
+ * vote with neither is reported as such, never dropped: "you picked someone"
+ * is still true.
  *
  * RATINGS ARE ANSWERED ON ONE SCALE: 1 to 5 stars, halves allowed. OpenTV has
  * rated out of ten since 2.0.0 (the sidecar says so with `movieScale` /
@@ -53,6 +60,22 @@ export type Film = {
 };
 export type EpisodeRating = { showId: number; season: number; episode: number; stars: number };
 export type UserList = { name: string; items: string[]; unnamedFilms: number };
+type Ep = { showId: number; season: number; episode: number };
+export type EpisodeFeeling = Ep & { feeling: string };
+/** `name` null: a vote whose character the backup cannot name. */
+export type EpisodeCharacter = Ep & { name: string | null };
+export type Comment = {
+  target: 'episode' | 'show' | 'film';
+  /** the show or film as the comment names it */
+  title: string;
+  showId?: number;
+  season?: number;
+  episode?: number;
+  date: string;
+  text: string;
+  reply?: true;
+  picture?: true;
+};
 
 export type Library = {
   shows: Show[];
@@ -60,6 +83,9 @@ export type Library = {
   films: Film[];
   episodeRatings: EpisodeRating[];
   lists: UserList[];
+  feelings: EpisodeFeeling[];
+  characters: EpisodeCharacter[];
+  comments: Comment[];
   /** indexes, built once at parse time */
   showById: Map<number, Show>;
   watchesByShow: Map<number, Watch[]>;
@@ -72,6 +98,7 @@ type Extras = {
   epStars?: { showId?: number; season?: number; episode?: number; stars?: number }[];
   movieScale?: number;
   epScale?: number;
+  epCharVotes?: { showId?: number; season?: number; episode?: number; name?: string | null }[];
 };
 
 export const RATING_SCALE = '1-5 stars, halves allowed (OpenTV rates out of ten; shown here halved, as the app draws it)';
@@ -92,7 +119,8 @@ const half = (v: number): number => Math.round(v * 2) / 2;
 
 export function parseLibrary(zip: Uint8Array): Library {
   const files = unzipExport(zip);
-  const { csv } = exportReader(files);
+  const reader = exportReader(files);
+  const { csv } = reader;
 
   let extras: Extras = {};
   const extrasKey = Object.keys(files).find((k) => k.endsWith('_opentv_extras.json'));
@@ -158,6 +186,12 @@ export function parseLibrary(zip: Uint8Array): Library {
     favourite: favFilms.has(m.name),
   }));
 
+  // Episode votes in the CSVs name the show, not its id: matched back by name,
+  // the v2 rows teaching alias spellings.
+  const idByName = new Map<string, number>();
+  for (const s of shows) idByName.set(fold(s.name), s.id);
+  for (const r of v2) if (r.series_name && r.s_id) idByName.set(fold(r.series_name), Number(r.s_id));
+
   // Episode ratings: the sidecar carries show ids and the exact value; the CSV
   // names the show and has to be matched back by name.
   let episodeRatings: EpisodeRating[];
@@ -167,9 +201,6 @@ export function parseLibrary(zip: Uint8Array): Library {
       .filter((r) => typeof r.showId === 'number' && typeof r.stars === 'number' && r.stars > 0)
       .map((r) => ({ showId: r.showId!, season: r.season ?? 0, episode: r.episode ?? 0, stars: half(r.stars! / scale) }));
   } else {
-    const idByName = new Map<string, number>();
-    for (const s of shows) idByName.set(fold(s.name), s.id);
-    for (const r of v2) if (r.series_name && r.s_id) idByName.set(fold(r.series_name), Number(r.s_id));
     episodeRatings = readEpisodeRatings(csv('ratings-3-prod-episode_votes.csv')).flatMap((r) => {
       const showId = idByName.get(fold(r.name));
       return showId ? [{ showId, season: r.season, episode: r.episode, stars: r.stars }] : [];
@@ -189,8 +220,41 @@ export function parseLibrary(zip: Uint8Array): Library {
       return { name: (r.name ?? '').trim() || 'Untitled list', items, unnamedFilms };
     });
 
-  return { shows, watches, films, episodeRatings, lists, showById, watchesByShow };
+  const feelings: EpisodeFeeling[] = readEpisodeEmotions(csv('emotions-3-prod-episode_votes.csv')).flatMap((r) => {
+    const showId = idByName.get(fold(r.name));
+    return showId ? [{ showId, season: r.season, episode: r.episode, feeling: FEELINGS[r.emotion]! }] : [];
+  });
+
+  // The sidecar names the character; the CSV has TV Time's id and nothing else.
+  const characters: EpisodeCharacter[] = Array.isArray(extras.epCharVotes)
+    ? extras.epCharVotes
+        .filter((v) => typeof v.showId === 'number')
+        .map((v) => ({ showId: v.showId!, season: v.season ?? 0, episode: v.episode ?? 0, name: typeof v.name === 'string' && v.name.trim() ? v.name.trim() : null }))
+    : readCharacterVotes(csv('show_character_episode_vote.csv')).flatMap((r) => {
+        const showId = idByName.get(fold(r.name));
+        return showId ? [{ showId, season: r.season, episode: r.episode, name: null }] : [];
+      });
+
+  const filmNames = new Set(films.map((f) => f.name));
+  const epEntity = /^(.*)\sS(\d+)E(\d+)$/;
+  const comments: Comment[] = readComments(reader).map((c) => {
+    const base = { date: stamp(c.date), text: c.text, ...(c.type === 'reply' ? { reply: true as const } : {}), ...(c.imageUrl ? { picture: true as const } : {}) };
+    const m = epEntity.exec(c.entity);
+    if (m) {
+      const showId = idByName.get(fold(m[1]!));
+      return { target: 'episode', title: m[1]!, ...(showId ? { showId } : {}), season: Number(m[2]), episode: Number(m[3]), ...base };
+    }
+    if (filmNames.has(c.entity)) return { target: 'film', title: c.entity, ...base };
+    const showId = idByName.get(fold(c.entity));
+    return { target: 'show', title: c.entity, ...(showId ? { showId } : {}), ...base };
+  });
+
+  return { shows, watches, films, episodeRatings, lists, feelings, characters, comments, showById, watchesByShow };
 }
+
+/** What a favourite-character vote says, named or not. */
+export const NO_CHARACTER_NAME = 'a character (no name in the backup)';
+const characterLabel = (c: EpisodeCharacter | undefined): string | null => (c ? (c.name ?? NO_CHARACTER_NAME) : null);
 
 // ── the tools' answers ───────────────────────────────────────────────────────
 //
@@ -297,6 +361,16 @@ export function showProgress(lib: Library, title: string) {
     if (list) list.push(w);
     else seasons.set(w.season, [w]);
   }
+  // Feelings and favourite character per episode, only for episodes that have one.
+  const reactions = new Map<string, { episode: number; feelings?: string[]; favouriteCharacter?: string }>();
+  const reaction = (season: number, episode: number) => {
+    const k = `${season}x${episode}`;
+    let r = reactions.get(k);
+    if (!r) reactions.set(k, (r = { episode }));
+    return r;
+  };
+  for (const f of lib.feelings) if (f.showId === s.id) (reaction(f.season, f.episode).feelings ??= []).push(f.feeling);
+  for (const c of lib.characters) if (c.showId === s.id) reaction(c.season, c.episode).favouriteCharacter = characterLabel(c)!;
   return {
     found: true,
     ...showSummary(lib, s),
@@ -304,14 +378,44 @@ export function showProgress(lib: Library, title: string) {
       .sort((a, b) => a[0] - b[0])
       .map(([season, list]) => {
         const last = list.reduce((a, b) => (b.at > a.at ? b : a));
+        const felt = [...reactions.entries()]
+          .filter(([k]) => k.startsWith(`${season}x`))
+          .map(([, r]) => r)
+          .sort((a, b) => a.episode - b.episode);
         return {
           season,
           episodesWatched: new Set(list.map((w) => w.episode)).size,
           lastWatched: last.at ? day(last.at) : null,
           lastEpisode: last.episode,
+          ...(felt.length ? { reactions: felt } : {}),
         };
       }),
     ...(found.length > 1 ? { otherMatches: found.slice(1, 6).map((x) => x.name) } : {}),
+  };
+}
+
+/** Everything the user said about one episode: watches, rating, feelings, favourite character, comments. */
+export function episodeDetails(lib: Library, title: string, season: number, episode: number) {
+  const p = findShow(lib, title);
+  if ('refuse' in p) return { found: false, message: p.refuse };
+  const s = p.hit;
+  const same = (x: Ep) => x.showId === s.id && x.season === season && x.episode === episode;
+  const dates = (lib.watchesByShow.get(s.id) ?? []).filter(same).map((w) => w.at).sort();
+  const sameShow = (c: Comment) => c.showId === s.id || fold(c.title) === fold(s.name);
+  return {
+    found: true,
+    show: s.name,
+    season,
+    episode,
+    watched: dates.length > 0,
+    watchDates: dates.map((d) => day(d) || 'no date'),
+    rating: lib.episodeRatings.find(same)?.stars ?? null,
+    ratingScale: RATING_SCALE,
+    feelings: lib.feelings.filter(same).map((f) => f.feeling),
+    favouriteCharacter: characterLabel(lib.characters.find(same)),
+    comments: lib.comments
+      .filter((c) => c.target === 'episode' && c.season === season && c.episode === episode && sameShow(c))
+      .map((c) => ({ date: day(c.date) || null, text: c.text, ...(c.reply ? { reply: true } : {}), ...(c.picture ? { picture: true } : {}) })),
   };
 }
 
@@ -346,7 +450,14 @@ export function stats(lib: Library, year?: number) {
       episodes: distribution(lib.episodeRatings.map((r) => r.stars)),
       films: distribution(lib.films.flatMap((f) => (f.stars === null ? [] : [f.stars]))),
     },
-    note: 'Episode counts include rewatches. Films count once, on their latest watch date. Hours cover only items with a known runtime.',
+    // Feelings carry no date either: episodes per feeling, all time.
+    mostFeltAllTime: Object.entries(
+      lib.feelings.reduce<Record<string, number>>((n, f) => ((n[f.feeling] = (n[f.feeling] ?? 0) + 1), n), {}),
+    )
+      .sort((a, b) => b[1] - a[1])
+      .map(([feeling, episodes]) => ({ feeling, episodes })),
+    episodesWithFavouriteCharacter: lib.characters.length,
+    note: 'Episode counts include rewatches. Films count once, on their latest watch date. Hours cover only items with a known runtime. Ratings and feelings are undated, so they are all time.',
   };
 }
 
@@ -399,8 +510,8 @@ export function lists(lib: Library, cap = 200) {
 // what makes "mark it watched" followed by "what did I watch today?" agree.
 //
 // A COPY, never the cached library: `server.ts` keeps one parse per backup and
-// every call starts from it. Kinds no read tool looks at (emotion, charVote,
-// design, a newer build's) are skipped, exactly as an older phone skips them.
+// every call starts from it. Kinds no read tool looks at (design, a newer
+// build's) are skipped, exactly as an older phone skips them.
 
 export type RelayOp = { ts: number; kind: string; payload: string };
 
@@ -426,6 +537,8 @@ export function applyOps(lib: Library, ops: readonly RelayOp[]): Library {
   let watches = lib.watches.slice();
   let films = lib.films.map((f) => ({ ...f }));
   let epRatings = lib.episodeRatings.slice();
+  let feelings = lib.feelings.slice();
+  let characters = lib.characters.slice();
   const film = (name: string) => films.find((f) => f.name === name) ?? films.find((f) => f.name.toLowerCase() === name.toLowerCase());
   const sameEp = (show: number, s: number, e: number) => (w: { showId: number; season: number; episode: number }) =>
     w.showId === show && w.season === s && w.episode === e;
@@ -459,9 +572,12 @@ export function applyOps(lib: Library, ops: readonly RelayOp[]): Library {
       case 'unwatch':
         // The phone clears the episode's rating with the watch (2.3.0), so the
         // replay does too: Claude must not see a rating for an unwatched episode.
+        // Feelings and the favourite character go with it the same way.
         if (ep) {
           watches = watches.filter((w) => !sameEp(show, s, e)(w));
           epRatings = epRatings.filter((r) => !sameEp(show, s, e)(r));
+          feelings = feelings.filter((f) => !sameEp(show, s, e)(f));
+          characters = characters.filter((c) => !sameEp(show, s, e)(c));
         }
         break;
       case 'rate': {
@@ -473,6 +589,20 @@ export function applyOps(lib: Library, ops: readonly RelayOp[]): Library {
       }
       case 'unrate':
         if (ep) epRatings = epRatings.filter((r) => !sameEp(show, s, e)(r));
+        break;
+      case 'emotion': {
+        // The op states the resulting state, as the phone reads it.
+        const feeling = FEELINGS[num(o.emotion) ?? -1];
+        if (!ep || !feeling) break;
+        feelings = feelings.filter((f) => !(sameEp(show, s, e)(f) && f.feeling === feeling));
+        if (o.on === true) feelings.push({ showId: show, season: s, episode: e, feeling });
+        break;
+      }
+      case 'charVote':
+        // One favourite per episode; a null name takes it back.
+        if (!ep) break;
+        characters = characters.filter((c) => !sameEp(show, s, e)(c));
+        if (name) characters.push({ showId: show, season: s, episode: e, name });
         break;
       case 'showAdd':
         if (show === null || show <= 0) break;
@@ -492,6 +622,8 @@ export function applyOps(lib: Library, ops: readonly RelayOp[]): Library {
         shows.delete(show);
         watches = watches.filter((w) => w.showId !== show);
         epRatings = epRatings.filter((r) => r.showId !== show);
+        feelings = feelings.filter((f) => f.showId !== show);
+        characters = characters.filter((c) => c.showId !== show);
         break;
       case 'movieAdd':
         if (name && !film(name)) {
@@ -536,7 +668,7 @@ export function applyOps(lib: Library, ops: readonly RelayOp[]): Library {
     if (list) list.push(w);
     else watchesByShow.set(w.showId, [w]);
   }
-  return { ...lib, shows: showList, watches, films, episodeRatings: epRatings, showById: new Map(showList.map((s) => [s.id, s])), watchesByShow };
+  return { ...lib, shows: showList, watches, films, episodeRatings: epRatings, feelings, characters, showById: new Map(showList.map((s) => [s.id, s])), watchesByShow };
 }
 
 // ── writes: only ops the shipped phones already apply ────────────────────────
