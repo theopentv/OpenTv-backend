@@ -457,7 +457,12 @@ export function applyOps(lib: Library, ops: readonly RelayOp[]): Library {
         watches.push({ showId: show, season: s, episode: e, at: (op.kind === 'watch' && typeof o.at === 'string' && stamp(o.at)) || at, runtime: null });
         break;
       case 'unwatch':
-        if (ep) watches = watches.filter((w) => !sameEp(show, s, e)(w));
+        // The phone clears the episode's rating with the watch (2.3.0), so the
+        // replay does too: Claude must not see a rating for an unwatched episode.
+        if (ep) {
+          watches = watches.filter((w) => !sameEp(show, s, e)(w));
+          epRatings = epRatings.filter((r) => !sameEp(show, s, e)(r));
+        }
         break;
       case 'rate': {
         const ten = tenOf(o);
@@ -614,9 +619,12 @@ export function planUnmarkEpisode(lib: Library, title: string, season: number, e
   if ('refuse' in p) return p;
   const seen = (lib.watchesByShow.get(p.hit.id) ?? []).some((w) => w.season === season && w.episode === episode);
   if (!seen) return { refuse: `${epLabel(p.hit, season, episode)} is not marked watched. Nothing was changed.` };
+  const rated = lib.episodeRatings.find((r) => r.showId === p.hit.id && r.season === season && r.episode === episode);
   return {
     ops: [out('unwatch', { show: p.hit.id, s: season, e: episode })],
-    done: `Un-marked ${epLabel(p.hit, season, episode)}; every watch of it is removed.`,
+    done:
+      `Un-marked ${epLabel(p.hit, season, episode)}; every watch of it is removed, ` +
+      `and so are ${rated ? `its rating (${rated.stars} stars), ` : 'any rating, '}feelings and favourite character for it. Comments on it stay.`,
   };
 }
 

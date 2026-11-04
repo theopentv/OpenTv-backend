@@ -568,6 +568,8 @@ describe('write plans', () => {
   it('un-mark: `unwatch`, only for an episode that is watched', () => {
     expect(opsOf(planUnmarkEpisode(lib, 'Breaking Bad', 1, 2))).toEqual([{ kind: 'unwatch', show: 100, s: 1, e: 2 }]);
     expect(refusal(planUnmarkEpisode(lib, 'Breaking Bad', 9, 9))).toMatch(/not marked watched/);
+    // Claude has to be able to say what goes with the watch.
+    expect((planUnmarkEpisode(lib, 'Breaking Bad', 1, 2) as { done: string }).done).toMatch(/rating \(3 stars\).*feelings and favourite character.*Comments on it stay/);
   });
 
   it('mark a film: `movieWatch` on the library’s own name; a new one is `movieAdd` first', () => {
@@ -631,6 +633,8 @@ describe('fresh reads: relay ops replayed over the backup', () => {
       { date: '2026-11-02', type: 'episode', title: 'Breaking Bad', season: 3, episode: 1 },
     ]);
     expect(showProgress(fresh, 'Breaking Bad')).toMatchObject({ episodesWatched: 3 });
+    // Un-watching S1E2 took its rating with it, as the phone does.
+    expect(ratings(fresh, 'episodes').items).not.toContainEqual(expect.objectContaining({ title: 'Breaking Bad', season: 1, episode: 2 }));
     expect(ratings(fresh, 'episodes').items).toContainEqual({ type: 'episode', title: 'Breaking Bad', season: 3, episode: 1, stars: 3.5 });
     expect(searchLibrary(fresh, 'inception').films[0]?.rating).toBeNull();
     expect(searchLibrary(fresh, 'amelie').films).toEqual([]);

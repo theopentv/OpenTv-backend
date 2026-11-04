@@ -385,7 +385,7 @@ export function buildServer(env: Env, profileId: string, caller: Caller = { canW
   register(
     'unmark_episode_watched',
     {
-      description: 'Remove an episode from the user\'s watch history (every watch of it). Use only when they ask to un-mark it.' + after,
+      description: 'Remove an episode from the user\'s watch history (every watch of it). This ALSO removes the user\'s rating, feelings and favourite character for that episode (their comments stay): tell the user this before they approve. Use only when they ask to un-mark it.' + after,
       inputSchema: z.object({ show: z.string().min(1).describe('The show title'), season: season.describe('Season number'), episode: episode.describe('Episode number') }),
       annotations: { ...WRITES, destructiveHint: true, idempotentHint: true },
     },
