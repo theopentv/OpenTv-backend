@@ -22,7 +22,9 @@ import {
 } from '@/mcp/library';
 import { MCP_SCOPES, oauthOptions } from '@/mcp/oauth-options';
 import { buildServer, clientLabel, countCall, LANDS, loadLibrary, NO_SYNC, NO_WRITE_SCOPE } from '@/mcp/server';
+import { hashPassword } from '@/passwords';
 import { consumeCode } from '@/routes/mcp';
+import { buildReviewBackup } from '../scripts/make-review-backup';
 import { call, fakeBucket, freshDatabase, insertProfile, kv, makeEnv, tokenFor } from './harness';
 
 // ── a backup ZIP in the shape `mobile/src/exporter.ts` writes ────────────────
@@ -201,6 +203,29 @@ describe('the backup, read', () => {
     const old = parseLibrary(backupZip({ extras: false }));
     expect(old.films.find((f) => f.name === 'Inception')?.stars).toBe(5);
     expect(old.episodeRatings).toEqual([{ showId: 100, season: 1, episode: 1, stars: 5 }]);
+  });
+});
+
+describe('the directory reviewers’ sample library (scripts/make-review-backup.ts)', () => {
+  const { zip, counts } = buildReviewBackup();
+  const lib = parseLibrary(zip);
+
+  it('reads back as a full library, and the printed counts match it', () => {
+    expect(counts).toEqual({ shows: lib.shows.length, episodes: lib.watches.length, movies: lib.films.length, filmsWatched: 7 });
+    expect(searchLibrary(lib, 'breaking bad').shows[0]).toMatchObject({ title: 'Breaking Bad', episodesWatched: 13, favourite: true, averageEpisodeRating: 4.5 });
+    expect(searchLibrary(lib, 'interstellar').films[0]).toMatchObject({ rating: 5, rewatches: 1, favourite: true, year: '2014' });
+    const all = stats(lib);
+    expect(all).toMatchObject({ episodesWatched: counts.episodes, showsWatched: 7, filmsWatched: 7, itemsWithoutRuntime: 0 });
+    expect(all.hoursWatched).toBeGreaterThan(50);
+    expect(watchHistory(lib, '2025-01-01', '2026-12-31').total).toBe(counts.episodes + 7);
+    expect(lists(lib)).toMatchObject({
+      watchlistFilms: { total: 3, titles: expect.arrayContaining(['Oppenheimer', 'Past Lives', 'Arrival']) },
+      followedShowsNotStarted: { total: 1, titles: ['Wednesday'] },
+      favourites: { shows: ['Breaking Bad', 'Stranger Things', 'Arcane'], films: ['Interstellar', 'Spirited Away'] },
+      // Every film in the list has a title: nothing for a model to apologise for.
+      lists: [{ name: 'Weekend picks', total: 4, items: ['Dark', 'Chernobyl', 'Arrival', 'Past Lives'] }],
+    });
+    expect(ratings(lib, 'episodes').items).toHaveLength(6);
   });
 });
 
@@ -431,6 +456,80 @@ describe('linking Claude: /authorize and the connections', () => {
     const del = await call(env, 'DELETE', `/v1/mcp/connections/${mine.json.connections[0].id}`, { token: t1 });
     expect(del.json).toEqual({ ok: true });
     expect((await call(env, 'GET', '/v1/mcp/connections', { token: t1 })).json.connections).toEqual([]);
+  });
+
+  describe('or an email and password, for people without the phone (the directory reviewers)', () => {
+    const PASSWORD = 'review-demo-pass-1';
+    beforeEach(async () => {
+      const t = new Date().toISOString();
+      raw
+        .prepare(
+          'INSERT INTO email_credentials (profile_id, email, email_lower, password_hash, verified_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        )
+        .run('p1', 'Review@OpenTV.test', 'review@opentv.test', await hashPassword(PASSWORD), t, t, t);
+    });
+    const byEmail = async (h: { handle: string; cookie: string }, email: string, password: string) =>
+      send(env, 'POST', '/authorize', { form: { handle: h.handle, via: 'email', email, password, decision: 'approve' }, cookie: h.cookie });
+
+    it('the code comes first; the email form is second, folded, with the right autocomplete', async () => {
+      const { res } = await open();
+      expect(res.text.indexOf('name="code"')).toBeLessThan(res.text.indexOf('name="email"'));
+      expect(res.text).toContain('No code?');
+      expect(res.text).toContain('autocomplete="email"');
+      expect(res.text).toContain('autocomplete="current-password"');
+    });
+
+    it('the right password links that profile', async () => {
+      const res = await byEmail(await open(), ' review@opentv.test ', PASSWORD);
+      expect(res.status).toBe(302);
+      expect(new URL(res.headers.get('Location')!).searchParams.get('code')).toBeTruthy();
+      expect((await env.OAUTH_PROVIDER!.listUserGrants('p1')).items).toHaveLength(1);
+      expect((await env.OAUTH_PROVIDER!.listUserGrants('p2')).items).toHaveLength(0);
+    });
+
+    it('a wrong password and an unknown address read the same, and the handle survives', async () => {
+      const h = await open();
+      const wrong = await byEmail(h, 'review@opentv.test', 'nope-nope-nope');
+      const nobody = await byEmail(h, 'nobody@opentv.test', 'nope-nope-nope');
+      for (const r of [wrong, nobody]) {
+        expect(r.status).toBe(400);
+        expect(r.text).toContain('Wrong email or password.');
+        expect(r.text).toContain('<details open>');
+        expect(r.text).not.toContain('nope-nope-nope');
+      }
+      expect((await byEmail(h, 'review@opentv.test', PASSWORD)).status).toBe(302);
+    });
+
+    it('an unconfirmed address is refused', async () => {
+      raw.prepare('UPDATE email_credentials SET verified_at = NULL').run();
+      const res = await byEmail(await open(), 'review@opentv.test', PASSWORD);
+      expect(res.status).toBe(403);
+      expect(res.text).toContain('Confirm this email address');
+    });
+
+    it('a deleted profile is refused like an unknown one', async () => {
+      raw.prepare("UPDATE profiles SET deleted_at = '2026-11-01T00:00:00Z' WHERE id = 'p1'").run();
+      expect((await byEmail(await open(), 'review@opentv.test', PASSWORD)).status).toBe(400);
+    });
+
+    it('without Plus it cannot link', async () => {
+      raw.prepare('UPDATE profiles SET is_plus = 0 WHERE id = ?').run('p1');
+      const res = await byEmail(await open(), 'review@opentv.test', PASSWORD);
+      expect(res.status).toBe(402);
+      expect(res.text).toContain('does not have Plus');
+    });
+
+    it('is rate-limited per address, and per IP across both forms', async () => {
+      const h = await open();
+      for (let i = 0; i < 5; i++) expect((await byEmail(h, 'review@opentv.test', `wrong-${i}-xx`)).status).toBe(400);
+      // Even the right password, now: the address has had its five.
+      expect((await byEmail(h, 'review@opentv.test', PASSWORD)).status).toBe(429);
+      // Five more from this IP (four codes and the 429 above make ten) and the codes stop too.
+      for (let i = 0; i < 4; i++) {
+        expect((await send(env, 'POST', '/authorize', { form: { handle: h.handle, code: '000000', decision: 'approve' }, cookie: h.cookie })).status).toBe(400);
+      }
+      expect((await send(env, 'POST', '/authorize', { form: { handle: h.handle, code: '000000', decision: 'approve' }, cookie: h.cookie })).status).toBe(429);
+    });
   });
 
   it('answers not_configured where there is no OAuth provider', async () => {

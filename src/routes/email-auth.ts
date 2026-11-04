@@ -323,24 +323,18 @@ emailAuth.post('/auth/email/register', async (c) => {
   return c.json({ ...s, needs_handle: true }, 201);
 });
 
-// ── POST /v1/auth/email/login ───────────────────────────────────────────────
+/**
+ * THE password check, for every door that takes an email and a password: the
+ * app's sign-in below and the MCP consent page (`routes/mcp.ts`). One copy, so
+ * the dummy-hash timing, the per-account lock and the rehash cannot drift
+ * between them. Deleted profiles never match. Verification (`verified_at`) is
+ * the caller's to judge: the app hands an unverified account a restricted
+ * session, the consent page refuses it.
+ */
+export type PasswordCheck = { ok: true; row: CredRow } | { ok: false; why: 'no_password' | 'locked' | 'wrong' };
 
-emailAuth.post('/auth/email/login', async (c) => {
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch {
-    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
-  }
-  const b = (body ?? {}) as Record<string, unknown>;
-  const email = normaliseEmail(b.email);
-  const password = typeof b.password === 'string' ? b.password : '';
-
-  const wrong = () => fail(c, 401, 'unauthenticated', 'That email or password is wrong.');
-  if (!email || password.length === 0) return wrong();
-
-  const nowMs = Date.now();
-  const row = await c.env.DB.prepare(
+export async function checkEmailPassword(env: Env, email: string, password: string, nowMs: number): Promise<PasswordCheck> {
+  const row = await env.DB.prepare(
     `SELECT c.profile_id, c.email, c.password_hash, c.verified_at, c.failed_count, c.locked_until,
             p.session_epoch
        FROM email_credentials c JOIN profiles p ON p.id = c.profile_id
@@ -362,7 +356,57 @@ emailAuth.post('/auth/email/login', async (c) => {
     // timing must not become a SECOND channel that works when this route is
     // called with a garbage body, or from a client that ignores the code.
     await verifyPassword(password, DUMMY_HASH);
+    return { ok: false, why: 'no_password' };
+  }
 
+  if (row.locked_until && Date.parse(row.locked_until) > nowMs) return { ok: false, why: 'locked' };
+
+  const ok = await verifyPassword(password, row.password_hash);
+  if (!ok) {
+    const failed = row.failed_count + 1;
+    const lock = failed >= LOGIN_FAIL_LIMIT ? new Date(nowMs + LOGIN_LOCK_MS).toISOString() : null;
+    await env.DB.prepare(
+      'UPDATE email_credentials SET failed_count = ?, locked_until = ?, updated_at = ? WHERE profile_id = ?',
+    )
+      .bind(lock ? 0 : failed, lock, new Date(nowMs).toISOString(), row.profile_id)
+      .run();
+    return { ok: false, why: 'wrong' };
+  }
+
+  // A correct password clears the counter, and takes the chance to raise the
+  // cost if the stored hash predates a bump — the only moment the plaintext is
+  // available to re-hash with.
+  const rehash = needsRehash(row.password_hash) ? await hashPassword(password) : null;
+  await env.DB.prepare(
+    `UPDATE email_credentials
+        SET failed_count = 0, locked_until = NULL, password_hash = COALESCE(?, password_hash), updated_at = ?
+      WHERE profile_id = ?`,
+  )
+    .bind(rehash, new Date(nowMs).toISOString(), row.profile_id)
+    .run();
+
+  return { ok: true, row };
+}
+
+// ── POST /v1/auth/email/login ───────────────────────────────────────────────
+
+emailAuth.post('/auth/email/login', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const b = (body ?? {}) as Record<string, unknown>;
+  const email = normaliseEmail(b.email);
+  const password = typeof b.password === 'string' ? b.password : '';
+
+  const wrong = () => fail(c, 401, 'unauthenticated', 'That email or password is wrong.');
+  if (!email || password.length === 0) return wrong();
+
+  const nowMs = Date.now();
+  const check = await checkEmailPassword(c.env, email, password, nowMs);
+  if (!check.ok && check.why === 'no_password') {
     /**
      * NO PASSWORD HERE — but is there an account at all?
      *
@@ -394,36 +438,13 @@ emailAuth.post('/auth/email/login', async (c) => {
     }
     return wrong();
   }
-
-  if (row.locked_until && Date.parse(row.locked_until) > nowMs) {
+  if (!check.ok && check.why === 'locked') {
     // Deliberately its own code: this one IS safe to be specific about, because
     // reaching it already required knowing the address.
     return fail(c, 429, 'rate_limited', 'Too many attempts. Try again in a few minutes.');
   }
-
-  const ok = await verifyPassword(password, row.password_hash);
-  if (!ok) {
-    const failed = row.failed_count + 1;
-    const lock = failed >= LOGIN_FAIL_LIMIT ? new Date(nowMs + LOGIN_LOCK_MS).toISOString() : null;
-    await c.env.DB.prepare(
-      'UPDATE email_credentials SET failed_count = ?, locked_until = ?, updated_at = ? WHERE profile_id = ?',
-    )
-      .bind(lock ? 0 : failed, lock, new Date(nowMs).toISOString(), row.profile_id)
-      .run();
-    return wrong();
-  }
-
-  // A correct password clears the counter, and takes the chance to raise the
-  // cost if the stored hash predates a bump — the only moment the plaintext is
-  // available to re-hash with.
-  const rehash = needsRehash(row.password_hash) ? await hashPassword(password) : null;
-  await c.env.DB.prepare(
-    `UPDATE email_credentials
-        SET failed_count = 0, locked_until = NULL, password_hash = COALESCE(?, password_hash), updated_at = ?
-      WHERE profile_id = ?`,
-  )
-    .bind(rehash, new Date(nowMs).toISOString(), row.profile_id)
-    .run();
+  if (!check.ok) return wrong();
+  const row = check.row;
 
   // Signing in again does NOT lift the restriction — only confirming does.
   // The account's CURRENT epoch, not zero: a reset raises it, and a token
