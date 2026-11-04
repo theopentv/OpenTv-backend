@@ -20,6 +20,7 @@ import {
 import { overBudget, SESSION_BUDGET } from '@/rate-limit';
 import { RENEW_AFTER_SECONDS, sign } from '@/session';
 import { refreshCommsuniProfile } from '@/routes/commsuni';
+import { deleteAllBackups } from '@/routes/backup';
 import { FREE_MONTH_CAMPAIGN, freeMonthOpen } from '@/routes/free-month';
 
 /**
@@ -846,6 +847,18 @@ auth.delete('/me', async (c) => {
     } catch {
       // An orphaned object is swept by the Step 5 job; failing the deletion
       // over it would be the wrong trade.
+    }
+  }
+
+  // THE LIBRARY COPIES (2.3.0). OpenTV Backup's ZIPs and pictures sat in R2
+  // after the account was gone: a deleted account must not leave its watch
+  // history on our server. Same guard as the avatar — never fail the deletion
+  // over it.
+  if (c.env.BACKUPS) {
+    try {
+      await deleteAllBackups(c.env.BACKUPS, me);
+    } catch {
+      // Logged by the runtime; the account is still deleted.
     }
   }
 

@@ -379,6 +379,18 @@ async function deleteImages(bucket: R2Bucket, profileId: string): Promise<void> 
   } while (cursor);
 }
 
+/**
+ * Every copy this profile has: each device's ZIP, the pre-per-device one, and
+ * the pictures. "Take my library off your server" — and deleting the account,
+ * which said nothing about backups until 2.3.0 and left them in R2.
+ */
+export async function deleteAllBackups(bucket: R2Bucket, profileId: string): Promise<void> {
+  for (const b of await listBackups(bucket, profileId)) {
+    await bucket.delete(b.device ? keyFor(profileId, b.device) : legacyKeyFor(profileId));
+  }
+  await deleteImages(bucket, profileId);
+}
+
 // ── delete ───────────────────────────────────────────────────────────────────
 
 /**
@@ -400,10 +412,6 @@ backup.delete('/backup', requireAuth, async (c) => {
     await bucket.delete(keyFor(profileId, asked));
     return c.json({ ok: true });
   }
-  for (const b of await listBackups(bucket, profileId)) {
-    await bucket.delete(b.device ? keyFor(profileId, b.device) : legacyKeyFor(profileId));
-  }
-  // And the pictures: "take my library off your server" includes them.
-  await deleteImages(bucket, profileId);
+  await deleteAllBackups(bucket, profileId);
   return c.json({ ok: true });
 });

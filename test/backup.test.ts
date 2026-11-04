@@ -328,3 +328,16 @@ describe('backup pictures, beside the ZIP', () => {
     expect(bucket.stored.size).toBe(0);
   });
 });
+
+describe('deleting the account', () => {
+  it('takes every backup and picture with it, and nobody else\'s', async () => {
+    makePlus('p1');
+    makePlus('p2');
+    const other = await tokenFor(env, 'p2');
+    await callBytes(env, 'POST', '/v1/backup', ZIP, { token, headers: { 'X-OpenTV-Device': 'phone' } });
+    await callBytes(env, 'PUT', '/v1/backup/images/a.gif', ZIP, { token });
+    await callBytes(env, 'POST', '/v1/backup', ZIP, { token: other, headers: { 'X-OpenTV-Device': 'phone' } });
+    expect((await call(env, 'DELETE', '/v1/me', { token })).status).toBe(204);
+    expect([...bucket.stored.keys()]).toEqual(['backups/p2/phone.zip']);
+  });
+});
