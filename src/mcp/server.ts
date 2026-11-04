@@ -102,7 +102,9 @@ export async function loadLibrary(env: Env, profileId: string): Promise<Loaded |
 
 const text = (t: string, isError = false): CallToolResult => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError } : {}) });
 
-const NO_PLUS = 'This OpenTV account no longer has OpenTV Plus, which the Claude and ChatGPT connection needs. Renew Plus in the OpenTV app to use it again.';
+// No upgrade prompt here: the ChatGPT directory forbids promoting a
+// subscription inside the conversation. Say what is true and stop.
+const NO_PLUS = 'This OpenTV account does not include the Claude and ChatGPT connection right now, so this cannot be done.';
 
 /** `sync_ops.created_at` is SQLite's `YYYY-MM-DD HH:MM:SS`, UTC; R2's upload time is ISO. */
 const sqlTime = (iso: string) => iso.replace('T', ' ').slice(0, 19);
@@ -251,7 +253,7 @@ export async function countCall(env: Env, profileId: string, tool: string, clien
 
 const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD');
 const kind = z.enum(['episodes', 'films', 'all']).optional();
-const READ_ONLY = { readOnlyHint: true, openWorldHint: false } as const;
+const READ_ONLY = { readOnlyHint: true, destructiveHint: false, openWorldHint: false } as const;
 /** Not read-only, so Claude and ChatGPT ask the member before each call. Adds only, so not destructive. */
 const WRITES = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false } as const;
 const year = z.string().regex(/^\d{4}$/, 'YYYY').optional().describe('Release year, to tell two films apart');

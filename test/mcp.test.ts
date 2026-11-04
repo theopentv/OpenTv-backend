@@ -614,8 +614,8 @@ describe('the MCP server: annotations, gates, relay, usage', () => {
     expect(NO_SYNC).toContain('Settings → Library → Backup');
 
     raw.prepare('UPDATE profiles SET is_plus = 0 WHERE id = ?').run('p1');
-    expect((await run('rate', { title: 'Inception', stars: 4 })).text).toMatch(/no longer has OpenTV Plus/);
-    expect((await run('lists', {})).text).toMatch(/no longer has OpenTV Plus/);
+    expect((await run('rate', { title: 'Inception', stars: 4 })).text).toMatch(/does not include the Claude and ChatGPT connection/);
+    expect((await run('lists', {})).text).toMatch(/does not include the Claude and ChatGPT connection/);
     expect(relayed()).toEqual([]);
   });
 
