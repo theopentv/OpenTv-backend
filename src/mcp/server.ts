@@ -260,13 +260,30 @@ const year = z.string().regex(/^\d{4}$/, 'YYYY').optional().describe('Release ye
 const season = z.number().int().min(0).max(1000);
 const episode = z.number().int().min(0).max(10000);
 
+const TOOL_TITLES: Record<string, string> = {
+  search_library: 'Search my library',
+  watch_history: 'What I watched',
+  show_progress: 'Show progress',
+  stats: 'My stats',
+  ratings: 'My ratings',
+  lists: 'My watchlist and lists',
+  mark_episode_watched: 'Mark episode watched',
+  unmark_episode_watched: 'Unmark episode',
+  mark_movie_watched: 'Mark film watched',
+  rate: 'Rate',
+  add_to_watchlist: 'Add to watchlist',
+  set_episode_feeling: 'Set episode feeling',
+};
+
 export type Caller = { canWrite: boolean; client: string };
 
 export function buildServer(env: Env, profileId: string, caller: Caller = { canWrite: false, client: 'Other' }): McpServer {
   const server = new McpServer({ name: 'OpenTV', version: '2.3.0' });
   // Every tool is registered through this, so every call is counted — by name.
-  const register: typeof server.registerTool = ((name: string, config: never, cb: (...a: unknown[]) => unknown) =>
-    server.registerTool(name, config, (async (...a: unknown[]) => {
+  // A readable title on every tool, at the top and in the annotations: the
+  // Claude directory requires one, and both clients show it on approval.
+  const register: typeof server.registerTool = ((name: string, config: { annotations?: object }, cb: (...a: unknown[]) => unknown) =>
+    server.registerTool(name, { ...config, title: TOOL_TITLES[name] ?? name, annotations: { ...config.annotations, title: TOOL_TITLES[name] ?? name } } as never, (async (...a: unknown[]) => {
       await countCall(env, profileId, name, caller.client);
       return cb(...a);
     }) as never)) as never;
