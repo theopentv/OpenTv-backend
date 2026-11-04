@@ -77,7 +77,14 @@
   "routes": [
     { "pattern": "theopentv.com/@*", "zone_name": "theopentv.com" },
     { "pattern": "theopentv.com/list/*", "zone_name": "theopentv.com" },
-    { "pattern": "dashboard.theopentv.com/*", "zone_name": "theopentv.com" }
+    { "pattern": "dashboard.theopentv.com/*", "zone_name": "theopentv.com" },
+    // Claude & ChatGPT (2.3.0): the connector is theopentv.com/mcp, short
+    // enough to type. Only the MCP and OAuth paths come here; every other
+    // path, and every other .well-known file, stays with the site.
+    { "pattern": "theopentv.com/mcp*", "zone_name": "theopentv.com" },
+    { "pattern": "theopentv.com/authorize*", "zone_name": "theopentv.com" },
+    { "pattern": "theopentv.com/oauth/*", "zone_name": "theopentv.com" },
+    { "pattern": "theopentv.com/.well-known/oauth-*", "zone_name": "theopentv.com" }
   ],
 
   // The night shift — docs/IMPLEMENTATION.md Step 5. 04:00 UTC is the trough
@@ -104,7 +111,7 @@
     // every OAuth token is bound to it, so it must be the public origin exactly
     // (no trailing slash). For `wrangler dev`, override in .dev.vars:
     // MCP_ORIGIN=http://localhost:8787
-    "MCP_ORIGIN": "https://opentv-api.mahmoodbashar08.workers.dev",
+    "MCP_ORIGIN": "https://theopentv.com",
     // Comma-separated: iOS, Android and **Web** client ids. Android sign-in
     // returns the *web* client id as `aud`, which is the classic trap. Filled
     // in when Google sign-in is wired up in the app; empty means every Google
