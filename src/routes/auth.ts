@@ -817,6 +817,8 @@ auth.delete('/me', async (c) => {
     // A personal offer (0061) names nothing but a store offer and a date.
     db.prepare('DELETE FROM personal_offers WHERE profile_id = ?').bind(me),
     db.prepare('DELETE FROM puzzle_days WHERE profile_id = ?').bind(me),
+    // How often their Claude / ChatGPT used each tool (0070): counts, but theirs.
+    db.prepare('DELETE FROM mcp_calls WHERE profile_id = ?').bind(me),
     db.prepare('DELETE FROM commsuni_blocks WHERE profile_id = ?').bind(me),
 
     // The profiles row is SCRUBBED, not deleted. Hard-deleting would cascade

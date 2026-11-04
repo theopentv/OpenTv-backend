@@ -1504,6 +1504,59 @@ admin.get('/admin/puzzle', async (c) => {
   return c.json({ ...row, players: ever?.n ?? 0, since: ever?.since ?? null }, 200, { 'Cache-Control': 'no-store' });
 });
 
+/**
+ * Claude and ChatGPT (`mcp_calls`, 0070). How many members used it, which
+ * tools and which assistant, and whether the people using it still open the
+ * app — the question being whether it replaces the app or rides along with it.
+ * Counts only: the table has no column for anything that was asked.
+ */
+export async function mcpUsage(db: D1Database) {
+  const users = await db
+    .prepare(
+      `SELECT COUNT(DISTINCT CASE WHEN m.day = date('now') THEN m.profile_id END)            AS today,
+              COUNT(DISTINCT CASE WHEN m.day >= date('now', '-6 days') THEN m.profile_id END) AS week,
+              COUNT(DISTINCT m.profile_id)                                                    AS month
+         FROM mcp_calls m JOIN profiles pr ON pr.id = m.profile_id
+        WHERE m.day >= date('now', '-29 days') AND NOT ${robotSql('pr')}`,
+    )
+    .first<{ today: number; week: number; month: number }>();
+  // Of this week's MCP users, how many also opened the app this week. The
+  // app's open is `profile_days` (written by the session middleware, which the
+  // MCP server never passes through), so an MCP call cannot count as an open.
+  const opened = await db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM (SELECT DISTINCT m.profile_id FROM mcp_calls m JOIN profiles pr ON pr.id = m.profile_id
+                                  WHERE m.day >= date('now', '-6 days') AND NOT ${robotSql('pr')}) u
+        WHERE EXISTS (SELECT 1 FROM profile_days d WHERE d.profile_id = u.profile_id AND d.day >= date('now', '-6 days'))`,
+    )
+    .first<{ n: number }>();
+  const by = async (col: 'tool' | 'client') =>
+    (
+      await db
+        .prepare(
+          `SELECT m.${col} AS k, SUM(m.n) AS n FROM mcp_calls m JOIN profiles pr ON pr.id = m.profile_id
+            WHERE m.day >= date('now', '-29 days') AND NOT ${robotSql('pr')}
+            GROUP BY m.${col} ORDER BY n DESC`,
+        )
+        .all<{ k: string; n: number }>()
+    ).results ?? [];
+  return {
+    today: users?.today ?? 0,
+    week: users?.week ?? 0,
+    month: users?.month ?? 0,
+    alsoOpenedApp: opened?.n ?? 0,
+    byTool: await by('tool'),
+    byClient: await by('client'),
+  };
+}
+
+admin.get('/admin/mcp', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  return c.json(await mcpUsage(c.env.DB), 200, { 'Cache-Control': 'no-store' });
+});
+
 admin.get('/admin/trends', async (c) => {
   if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
     return fail(c, 401, 'unauthenticated', 'Sign in first.');

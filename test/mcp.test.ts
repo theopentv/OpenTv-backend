@@ -3,9 +3,25 @@ import { strToU8, zipSync } from 'fflate';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '@/env';
 import worker from '@/index';
-import { lists, parseLibrary, ratings, searchLibrary, showProgress, stats, watchHistory } from '@/mcp/library';
-import { oauthOptions } from '@/mcp/oauth-options';
-import { loadLibrary } from '@/mcp/server';
+import {
+  applyOps,
+  lists,
+  parseLibrary,
+  planFeeling,
+  planMarkEpisode,
+  planMarkFilm,
+  planRate,
+  planUnmarkEpisode,
+  planWatchlist,
+  ratings,
+  searchLibrary,
+  showProgress,
+  stats,
+  watchHistory,
+  type Plan,
+} from '@/mcp/library';
+import { MCP_SCOPES, oauthOptions } from '@/mcp/oauth-options';
+import { buildServer, clientLabel, countCall, LANDS, loadLibrary, NO_SYNC, NO_WRITE_SCOPE } from '@/mcp/server';
 import { consumeCode } from '@/routes/mcp';
 import { call, fakeBucket, freshDatabase, insertProfile, kv, makeEnv, tokenFor } from './harness';
 
@@ -395,6 +411,8 @@ describe('linking Claude: /authorize and the connections', () => {
   it('lists a member’s connections and revokes only their own', async () => {
     await link('p1');
     await link('p2');
+    // The page now offers changes too, so the grant carries the write scope.
+    expect((await env.OAUTH_PROVIDER!.listUserGrants('p1')).items[0]!.scope).toEqual(expect.arrayContaining(['mcp:read', 'mcp:write']));
     const t1 = await tokenFor(env, 'p1');
     const t2 = await tokenFor(env, 'p2');
 
@@ -418,5 +436,253 @@ describe('linking Claude: /authorize and the connections', () => {
   it('answers not_configured where there is no OAuth provider', async () => {
     const bare = { ...env, OAUTH_PROVIDER: undefined };
     expect((await call(bare, 'GET', '/v1/mcp/connections', { token: await tokenFor(bare, 'p1') })).status).toBe(503);
+  });
+});
+
+// ── writes: the ops the phones already apply ─────────────────────────────────
+//
+// Every expected payload below is `Action` in `mobile/src/sync-ops.ts` with its
+// `t` taken off as `kind` — what the phone's `parseOp` reads. The mobile suite
+// (`sync-ops.test.ts`, "ops the assistant writes") parses these same payloads.
+
+const opsOf = (p: Plan) => {
+  if ('refuse' in p) throw new Error(`refused: ${p.refuse}`);
+  return p.ops.map((o) => ({ kind: o.kind, ...JSON.parse(o.payload) }));
+};
+const refusal = (p: Plan) => ('refuse' in p ? p.refuse : null);
+
+describe('write plans', () => {
+  const lib = parseLibrary(backupZip());
+  const now = new Date('2026-11-04T10:00:00Z');
+
+  it('mark an episode: `watch` with the TheTVDB id and the phone’s watchedAt shape', () => {
+    expect(opsOf(planMarkEpisode(lib, 'breaking bad', 3, 1, '2026-11-01', now))).toEqual([
+      { kind: 'watch', show: 100, s: 3, e: 1, at: '2026-11-01 12:00:00' },
+    ]);
+    expect(opsOf(planMarkEpisode(lib, 'Dark', 1, 1, undefined, now))).toEqual([{ kind: 'watch', show: 300, s: 1, e: 1, at: '2026-11-04 10:00:00' }]);
+    expect(refusal(planMarkEpisode(lib, 'Breaking Bad', 1, 1, undefined, now))).toMatch(/already marked watched/);
+    expect(refusal(planMarkEpisode(lib, 'The Wire', 1, 1, undefined, now))).toMatch(/not in this OpenTV library/);
+    expect(refusal(planMarkEpisode(lib, 'Dark', 1, 1, '2027-01-01', now))).toMatch(/future/);
+    expect(refusal(planMarkEpisode(lib, 'Dark', 1, 1, 'soon', now))).toMatch(/not a date/);
+  });
+
+  it('un-mark: `unwatch`, only for an episode that is watched', () => {
+    expect(opsOf(planUnmarkEpisode(lib, 'Breaking Bad', 1, 2))).toEqual([{ kind: 'unwatch', show: 100, s: 1, e: 2 }]);
+    expect(refusal(planUnmarkEpisode(lib, 'Breaking Bad', 9, 9))).toMatch(/not marked watched/);
+  });
+
+  it('mark a film: `movieWatch` on the library’s own name; a new one is `movieAdd` first', () => {
+    expect(opsOf(planMarkFilm(lib, 'dune'))).toEqual([{ kind: 'movieWatch', name: 'Dune', on: true }]);
+    expect(refusal(planMarkFilm(lib, 'Inception'))).toMatch(/already marked watched/);
+    expect(opsOf(planMarkFilm(lib, 'Arrival', '2016'))).toEqual([
+      { kind: 'movieAdd', name: 'Arrival', poster: null, year: '2016', tmdbId: null },
+      { kind: 'movieWatch', name: 'Arrival', on: true },
+    ]);
+  });
+
+  it('rate: halves become out of ten, with the whole star a 1.7 phone reads', () => {
+    expect(opsOf(planRate(lib, 'Breaking Bad', 3.5, 2, 1))).toEqual([{ kind: 'rate', show: 100, s: 2, e: 1, ten: 7, stars: 4 }]);
+    expect(opsOf(planRate(lib, 'Amélie', 5))).toEqual([{ kind: 'movieStars', name: 'Amélie', ten: 10, stars: 5 }]);
+    expect(opsOf(planRate(lib, 'Amelie', 0.5))).toEqual([{ kind: 'movieStars', name: 'Amélie', ten: 1, stars: 1 }]);
+    expect(refusal(planRate(lib, 'Amélie', 3.3))).toMatch(/halves/);
+    expect(refusal(planRate(lib, 'Arrival', 4))).toMatch(/not a film in this OpenTV library/);
+    expect(refusal(planRate(lib, 'Breaking Bad', 4, 1))).toMatch(/both a season and an episode/);
+  });
+
+  it('watchlist: `movieAdd` for a new film, `showFlag followed` for a show', () => {
+    expect(opsOf(planWatchlist(lib, 'Arrival', 'film'))).toEqual([{ kind: 'movieAdd', name: 'Arrival', poster: null, year: null, tmdbId: null }]);
+    expect(refusal(planWatchlist(lib, 'Dune', 'film'))).toMatch(/already in the library/);
+    expect(opsOf(planWatchlist(lib, 'Lost', 'show'))).toEqual([{ kind: 'showFlag', show: 400, flag: 'followed', on: true }]);
+    expect(refusal(planWatchlist(lib, 'Breaking Bad', 'show'))).toMatch(/already followed/);
+  });
+
+  it('feeling: `emotion` by the phone’s index, as the resulting state', () => {
+    expect(opsOf(planFeeling(lib, 'Dark', 1, 1, 'tense', true))).toEqual([{ kind: 'emotion', show: 300, s: 1, e: 1, emotion: 11, on: true }]);
+    expect(opsOf(planFeeling(lib, 'Dark', 1, 1, 'shocked', false))).toEqual([{ kind: 'emotion', show: 300, s: 1, e: 1, emotion: 0, on: false }]);
+  });
+
+  it('several partial matches are asked about, never guessed', () => {
+    const two = applyOps(lib, [{ ts: 1, kind: 'showAdd', payload: JSON.stringify({ show: 500, name: 'Breaking Point', poster: null }) }]);
+    expect(refusal(planMarkEpisode(two, 'breaking', 1, 1, undefined, now))).toMatch(/Several shows.*Breaking Bad; Breaking Point/);
+  });
+});
+
+describe('fresh reads: relay ops replayed over the backup', () => {
+  const lib = parseLibrary(backupZip());
+  const op = (ts: number, kind: string, body: object) => ({ ts, kind, payload: JSON.stringify(body) });
+
+  it('applies what the phones apply, in device-clock order, without touching the cached library', () => {
+    const before = JSON.stringify(searchLibrary(lib, 'breaking'));
+    const ts = Date.parse('2026-11-02T20:00:00Z');
+    const fresh = applyOps(lib, [
+      op(ts + 120_000, 'unwatch', { show: 100, s: 1, e: 2 }),
+      op(ts, 'watch', { show: 100, s: 3, e: 1, at: '2026-11-02 20:00:00' }),
+      op(ts, 'rate', { show: 100, s: 3, e: 1, ten: 7, stars: 4 }),
+      op(ts, 'movieAdd', { name: 'Arrival', poster: null, year: '2016', tmdbId: null }),
+      op(ts + 60_000, 'movieWatch', { name: 'Arrival', on: true }),
+      op(ts, 'movieStars', { name: 'Inception', ten: null, stars: null }),
+      op(ts, 'movieDelete', { name: 'Amélie' }),
+      op(ts, 'showFlag', { show: 400, flag: 'archived', on: false }),
+      op(ts, 'emotion', { show: 100, s: 1, e: 1, emotion: 3, on: true }),
+      op(ts, 'someFutureKind', { x: 1 }),
+      { ts, kind: 'watch', payload: 'not json' },
+    ]);
+    expect(watchHistory(fresh, '2026-11-02', '2026-11-02').items).toEqual([
+      { date: '2026-11-02', type: 'film', title: 'Arrival' },
+      { date: '2026-11-02', type: 'episode', title: 'Breaking Bad', season: 3, episode: 1 },
+    ]);
+    expect(showProgress(fresh, 'Breaking Bad')).toMatchObject({ episodesWatched: 3 });
+    expect(ratings(fresh, 'episodes').items).toContainEqual({ type: 'episode', title: 'Breaking Bad', season: 3, episode: 1, stars: 3.5 });
+    expect(searchLibrary(fresh, 'inception').films[0]?.rating).toBeNull();
+    expect(searchLibrary(fresh, 'amelie').films).toEqual([]);
+    expect(fresh.shows.find((s) => s.id === 400)?.archived).toBe(false);
+    // The cached parse is the next call's starting point, and is untouched.
+    expect(JSON.stringify(searchLibrary(lib, 'breaking'))).toBe(before);
+    expect(applyOps(lib, [])).toBe(lib);
+  });
+
+  it('a show first met as a tick appears under its id until named', () => {
+    const fresh = applyOps(lib, [op(1, 'watch', { show: 777, s: 1, e: 1, at: '2026-11-01 10:00:00' }), op(2, 'showAdd', { show: 777, name: 'Severance', poster: null })]);
+    expect(showProgress(fresh, 'severance')).toMatchObject({ found: true, episodesWatched: 1 });
+  });
+});
+
+describe('the MCP server: annotations, gates, relay, usage', () => {
+  let env: Env;
+  let raw: ReturnType<typeof freshDatabase>['raw'];
+
+  type Tool = { annotations?: Record<string, unknown>; handler: (args: unknown, extra: unknown) => Promise<{ content: { text: string }[]; isError?: boolean }> };
+  const tools = (canWrite = true, client = 'Claude') =>
+    (buildServer(env, 'p1', { canWrite, client }) as unknown as { _registeredTools: Record<string, Tool> })._registeredTools;
+  const run = async (name: string, args: unknown, canWrite = true) => {
+    const r = await tools(canWrite)[name]!.handler(args, {});
+    return { text: r.content[0]!.text, error: !!r.isError };
+  };
+  const relayed = () => raw.prepare('SELECT device_id, kind, payload FROM sync_ops ORDER BY seq').all() as { device_id: string; kind: string; payload: string }[];
+
+  beforeEach(async () => {
+    const fresh = freshDatabase();
+    raw = fresh.raw;
+    const bucket = fakeBucket();
+    env = makeEnv(fresh.db, undefined, bucket);
+    insertProfile(raw, 'p1', 'amanda');
+    raw.prepare('UPDATE profiles SET is_plus = 1 WHERE id = ?').run('p1');
+    await bucket.put('backups/p1/dev1.zip', backupZip().buffer as ArrayBuffer);
+    // Sync is on: the phone has used the relay.
+    const t = new Date().toISOString();
+    raw.prepare('INSERT INTO devices (profile_id, device, name, platform, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)').run('p1', 'dev1', 'iPhone', 'ios', t, t);
+  });
+
+  it('read tools say read-only; write tools do not, and un-marking says destructive', () => {
+    const all = tools();
+    for (const n of ['search_library', 'watch_history', 'show_progress', 'stats', 'ratings', 'lists']) expect(all[n]!.annotations).toMatchObject({ readOnlyHint: true });
+    for (const n of ['mark_episode_watched', 'mark_movie_watched', 'rate', 'add_to_watchlist', 'set_episode_feeling']) {
+      expect(all[n]!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false });
+    }
+    expect(all.unmark_episode_watched!.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+  });
+
+  it('a write lands in the relay as the assistant, the phone pulls it, and the next read sees it', async () => {
+    const r = await run('mark_episode_watched', { show: 'Dark', season: 1, episode: 1, watched_at: '2026-11-01' });
+    expect(r.error).toBe(false);
+    expect(r.text).toContain('Marked Dark S1E1 watched on 2026-11-01.');
+    expect(r.text).toContain(LANDS);
+    expect(relayed()).toEqual([{ device_id: 'assistant', kind: 'watch', payload: '{"show":300,"s":1,"e":1,"at":"2026-11-01 12:00:00"}' }]);
+
+    // Not a device: the five places are untouched.
+    expect(raw.prepare('SELECT device FROM devices').all()).toEqual([{ device: 'dev1' }]);
+
+    // The phone hears it on its next sync, in its own vocabulary.
+    const pulled = await call(env, 'POST', '/v1/sync', { token: await tokenFor(env, 'p1'), body: { device: 'dev1', cursor: 0, ops: [] } });
+    expect(pulled.json.ops).toMatchObject([{ kind: 'watch', payload: '{"show":300,"s":1,"e":1,"at":"2026-11-01 12:00:00"}' }]);
+
+    const read = JSON.parse((await run('show_progress', { title: 'dark' })).text);
+    expect(read).toMatchObject({ changesSince: 1, episodesWatched: 1 });
+    // And doing it twice is refused, because the fresh read already has it.
+    expect((await run('mark_episode_watched', { show: 'Dark', season: 1, episode: 1 })).text).toMatch(/already marked watched/);
+  });
+
+  it('refuses without the write scope, without Plus, and without Sync — and relays nothing', async () => {
+    expect(await run('rate', { title: 'Dune', stars: 4 }, false)).toEqual({ text: NO_WRITE_SCOPE, error: true });
+
+    raw.prepare('DELETE FROM devices').run();
+    expect(await run('rate', { title: 'Inception', stars: 4 })).toEqual({ text: NO_SYNC, error: true });
+    // A removed phone is not Sync either.
+    const t = new Date().toISOString();
+    raw.prepare("INSERT INTO devices (profile_id, device, first_seen, last_seen, removed_at) VALUES ('p1', 'dev1', ?, ?, ?)").run(t, t, t);
+    expect((await run('rate', { title: 'Inception', stars: 4 })).text).toBe(NO_SYNC);
+    expect(NO_SYNC).toContain('Settings → Library → Backup');
+
+    raw.prepare('UPDATE profiles SET is_plus = 0 WHERE id = ?').run('p1');
+    expect((await run('rate', { title: 'Inception', stars: 4 })).text).toMatch(/no longer has OpenTV Plus/);
+    expect((await run('lists', {})).text).toMatch(/no longer has OpenTV Plus/);
+    expect(relayed()).toEqual([]);
+  });
+
+  it('counts each call by tool and assistant, and never what was asked', async () => {
+    await run('search_library', { query: 'Breaking Bad' });
+    await run('search_library', { query: 'Pokémon' });
+    await run('rate', { title: 'Inception', stars: 4.5 });
+    const rows = raw.prepare('SELECT * FROM mcp_calls ORDER BY tool').all() as Record<string, unknown>[];
+    const today = new Date().toISOString().slice(0, 10);
+    expect(rows).toEqual([
+      { profile_id: 'p1', day: today, tool: 'rate', client: 'Claude', n: 1 },
+      { profile_id: 'p1', day: today, tool: 'search_library', client: 'Claude', n: 2 },
+    ]);
+    expect(JSON.stringify(rows)).not.toMatch(/Breaking|Pok|Inception|4\.5/);
+  });
+
+  it('keeps 500 days per member', async () => {
+    raw.prepare("INSERT INTO mcp_calls VALUES ('p1', '2020-01-01', 'stats', 'Claude', 3)").run();
+    await countCall(env, 'p1', 'stats', 'Claude', '2026-11-04');
+    expect(raw.prepare('SELECT day, n FROM mcp_calls').all()).toEqual([{ day: '2026-11-04', n: 1 }]);
+  });
+
+  it('names the assistant from its client, and nothing else', () => {
+    expect(clientLabel('Claude')).toBe('Claude');
+    expect(clientLabel('https://chatgpt.com/connector_platform_oauth_redirect')).toBe('ChatGPT');
+    expect(clientLabel('OpenAI')).toBe('ChatGPT');
+    expect(clientLabel('My <b>bot</b>')).toBe('Other');
+    expect(clientLabel(undefined)).toBe('Other');
+  });
+
+  it('new connections are granted mcp:write', () => {
+    expect(MCP_SCOPES).toContain('mcp:write');
+  });
+
+  it('the dashboard card: users by window, calls by tool and client, and who also opened the app', async () => {
+    env = { ...env, ADMIN_EMAIL: 'me@example.com', ADMIN_PASSWORD: 'a-long-one' };
+    insertProfile(raw, 'p2', 'sara');
+    const day = (n: number) => new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+    const put = raw.prepare('INSERT INTO mcp_calls VALUES (?, ?, ?, ?, ?)');
+    put.run('p1', day(0), 'stats', 'Claude', 2);
+    put.run('p1', day(3), 'rate', 'Claude', 1);
+    put.run('p2', day(10), 'stats', 'ChatGPT', 4);
+    put.run('p2', day(40), 'stats', 'ChatGPT', 9);
+    raw.prepare('INSERT INTO profile_days (profile_id, day) VALUES (?, ?)').run('p1', day(1));
+    const login = await call(env, 'POST', '/v1/admin/login', { body: { email: 'me@example.com', password: 'a-long-one' } });
+    const cookie = login.headers.get('set-cookie')!.split(';')[0]!;
+    expect((await call(env, 'GET', '/v1/admin/mcp')).status).toBe(401);
+    const res = await call(env, 'GET', '/v1/admin/mcp', { headers: { Cookie: cookie } });
+    expect(res.json).toEqual({
+      today: 1,
+      week: 1,
+      month: 2,
+      alsoOpenedApp: 1,
+      byTool: [
+        { k: 'stats', n: 6 },
+        { k: 'rate', n: 1 },
+      ],
+      byClient: [
+        { k: 'ChatGPT', n: 4 },
+        { k: 'Claude', n: 3 },
+      ],
+    });
+  });
+
+  it('deleting the account deletes its counts', async () => {
+    await countCall(env, 'p1', 'stats', 'Claude');
+    expect((await call(env, 'DELETE', '/v1/me', { token: await tokenFor(env, 'p1') })).status).toBe(204);
+    expect(raw.prepare('SELECT * FROM mcp_calls').all()).toEqual([]);
   });
 });

@@ -11,9 +11,10 @@ import type { Env } from '@/env';
  * reachable from the tests and from nothing that `selfhost/` loads.
  *
  * CHOICES, and why:
- * - `mcp:read` is the only scope a token can do anything with. `mcp:write`
- *   arrives with the write tools (sync_ops from an "assistant" device), and a
- *   connection made today will be asked to step up then, not silently widened.
+ * - `mcp:read` is what every token needs. `mcp:write` lets the write tools
+ *   relay changes (sync_ops from an "assistant" device). Every connection
+ *   approved since the write tools arrived carries both; one approved before
+ *   kept read-only and is told to connect again, never silently widened.
  * - CIMD and dynamic registration both on. ChatGPT identifies itself with a
  *   Client ID Metadata Document; Claude and most other clients still register.
  *   CIMD needs `global_fetch_strictly_public` in wrangler.jsonc, without which
@@ -22,7 +23,7 @@ import type { Env } from '@/env';
  *   uses weekly should not need a new code from the phone every month; one
  *   abandoned for a season expires on its own.
  */
-export const MCP_SCOPES = ['mcp:read', 'offline_access'];
+export const MCP_SCOPES = ['mcp:read', 'mcp:write', 'offline_access'];
 
 export function oauthOptions(
   origin: string,

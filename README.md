@@ -83,9 +83,16 @@ that was removed before it was deployed; nothing reads or writes it.)
 
 ## Claude and ChatGPT (MCP, 2.3.0, Plus)
 
-`<origin>/mcp` is a read-only MCP server over the member's OWN backup ZIP in
-R2, parsed in memory when a tool is called. Nothing derived is stored: no
-table, no per-user database; no backup means every tool says "turn on Backup".
+`<origin>/mcp` is an MCP server over the member's OWN backup ZIP in R2,
+parsed in memory when a tool is called and brought up to date with the Sync
+relay ops written since that backup. Nothing derived is stored: no table, no
+per-user database; no backup means every tool says "turn on Backup".
+Its write tools (mark watched, rate, watchlist, feeling) store nothing either:
+each is a `sync_ops` row from a device called `assistant`, in the vocabulary the
+phones already apply, so it reaches the phone through Sync and is pruned with
+the rest of the relay. Members without Sync are told to turn it on. Usage is
+counted in `mcp_calls` (0070): member, day, tool name, Claude/ChatGPT/Other and
+a count, never an argument.
 `src/worker.ts` (wrangler's entry) puts the OAuth provider in front of the API;
 `/authorize` asks for a six-digit code from `POST /v1/mcp/code` in the app
 instead of a web sign-in. Needs a KV namespace bound as `OAUTH_KV`, `MCP_ORIGIN`

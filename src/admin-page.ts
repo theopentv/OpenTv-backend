@@ -256,6 +256,9 @@ export const ADMIN_PAGE = `<!doctype html>
     <h2>Daily puzzle</h2>
     <p class="note" id="puzzlenote">Members only, from the day their app started reporting. Playing means finished today or yesterday.</p>
     <div class="grid" id="puzzle"></div>
+    <h2>Claude &amp; ChatGPT</h2>
+    <p class="note">Members using OpenTV from an assistant. Calls are the last 30 days; counts only, never what was asked.</p>
+    <div class="grid" id="mcp"></div>
     <h2>Activity</h2>
     <p class="note">Everything the community holds, imports included. These only grow.</p>
     <div class="grid" id="activity"></div>
@@ -826,7 +829,7 @@ async function load() {
   ]);
 
   // Settled, not all: a chart that throws must never take the people table with it.
-  await Promise.allSettled([loadTrends(), loadPuzzle()]);
+  await Promise.allSettled([loadTrends(), loadPuzzle(), loadMcp()]);
 
   await loadPeople();
 
@@ -1015,6 +1018,19 @@ async function loadPuzzle() {
     ['Streaks of 7+', p.week],
     ['Streaks of 30+', p.month],
     ['Ever played', p.players],
+  ]);
+}
+async function loadMcp() {
+  const res = await fetch('/v1/admin/mcp', { credentials: 'same-origin' });
+  if (!res.ok) return;
+  const m = await res.json();
+  cards($('mcp'), [
+    ['Used today', m.today],
+    ['Used in 7 days', m.week],
+    ['Used in 30 days', m.month],
+    ['Of this week, also opened the app', m.alsoOpenedApp + ' of ' + m.week],
+    ...m.byClient.map((r) => ['Calls from ' + r.k, r.n]),
+    ...m.byTool.map((r) => ['Calls: ' + r.k.replace(/_/g, ' '), r.n]),
   ]);
 }
 async function loadTrends() {

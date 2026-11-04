@@ -25,8 +25,9 @@ import { bestBackupKey } from '@/routes/backup';
  * WHAT THE CODE IS WORTH TO A GUESSER. A million values, a handful alive at any
  * moment (one per member who pressed the button in the last five minutes), and
  * ten tries per address per ten minutes. Odds of a hit are a few in a hundred
- * thousand per address per window, and a hit gets read-only access to one
- * library — while the page shows the member which app is asking.
+ * thousand per address per window, and a hit reads one library and can relay
+ * changes to it (additions, ratings, un-marking an episode — never a deletion
+ * of the library) — while the page shows the member which app is asking.
  */
 export const mcp = new Hono<App>();
 /** `/authorize`, mounted at the root: it is a page a browser opens, not API. */
@@ -183,10 +184,11 @@ function consentPage(v: ConsentView, handle: string, error: string | null, statu
     ? `Published by <strong>${escape(v.clientDomain)}</strong>.`
     : 'This app named itself; the name is not verified.';
   return page(
-    `<h1>Let ${name} read your OpenTV library?</h1>
+    `<h1>Let ${name} use your OpenTV library?</h1>
 <p>${origin} Access goes to <strong>${escape(v.redirectHost)}</strong>.</p>
 ${v.redirectIsLoopback ? '<p class="warn">This sends access to an app on this computer. Continue only if you just started connecting from it.</p>' : ''}
-<p>It can read what is in your OpenTV backup: what you watched and when, your ratings and your lists. It cannot change anything.</p>
+<p>It can read what is in your OpenTV backup: what you watched and when, your ratings and your lists.</p>
+<p>It can also mark episodes and films watched, rate them, add to your watchlist and set how an episode made you feel. ${name} asks you before each change, and it reaches your phone through Sync.</p>
 <form method="post" autocomplete="off">
   <input type="hidden" name="handle" value="${escape(handle)}">
   <label for="code"><p>Enter the code from <strong>OpenTV → Settings → Claude &amp; ChatGPT</strong>.</p></label>
@@ -259,9 +261,10 @@ mcpAuthorize.post('/authorize', async (c) => {
       return consentPage(view, handle, 'This OpenTV account does not have Plus, which Claude and ChatGPT need.', 402);
     }
 
-    // `offline_access` only when asked for, `mcp:read` always: the page is
-    // about reading, and nothing else is on offer yet.
-    const scope = ['mcp:read', ...(view.scope.includes('offline_access') ? ['offline_access'] : [])];
+    // `offline_access` only when asked for; reading and writing always, which
+    // is what the page just described (clients rarely ask for `mcp:write` by
+    // name, and the library allows granting more than was requested).
+    const scope = ['mcp:read', 'mcp:write', ...(view.scope.includes('offline_access') ? ['offline_access'] : [])];
     const approved = await oauth.approveConsent(c.req.raw, handle, { scope });
     const { redirectTo } = await oauth.completeAuthorization({
       request: approved.request,
