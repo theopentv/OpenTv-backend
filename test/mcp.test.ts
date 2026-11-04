@@ -682,7 +682,7 @@ describe('the MCP server: annotations, gates, relay, usage', () => {
     // The Claude directory refuses a tool without a title, and ChatGPT's wants
     // all three hints spelled out.
     for (const [n, t] of Object.entries(all)) {
-      expect(t.title, n).toBeTruthy();
+      expect((t as { title?: string }).title, n).toBeTruthy();
       expect(typeof t.annotations?.destructiveHint, n).toBe('boolean');
       expect(typeof t.annotations?.openWorldHint, n).toBe('boolean');
     }
