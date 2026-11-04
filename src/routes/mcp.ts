@@ -218,7 +218,7 @@ ${v.redirectIsLoopback ? '<p class="warn">This sends access to an app on this co
 <p>It can also mark episodes and films watched, rate them, add to your watchlist and set how an episode made you feel. ${name} asks you before each change, and it reaches your phone through Sync.</p>
 <form method="post" autocomplete="off">
   <input type="hidden" name="handle" value="${escape(handle)}">
-  <label for="code"><p>Enter the code from <strong>OpenTV → Settings → Claude &amp; ChatGPT</strong>.</p></label>
+  <label for="code"><p>Enter the code from the OpenTV app: <strong>Profile → ••• → Settings → Library tab → Claude &amp; ChatGPT</strong> → Get a code.</p></label>
   ${codeError ? `<p class="err">${escape(codeError)}</p>` : ''}
   <input id="code" name="code" inputmode="numeric" pattern="[0-9 ]*" maxlength="7" placeholder="000000"${emailError ? '' : ' autofocus'}>
   <div class="row"><button class="deny" name="decision" value="deny">Deny</button><button class="allow" name="decision" value="approve">Allow</button></div>

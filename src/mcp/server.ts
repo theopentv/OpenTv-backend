@@ -140,7 +140,7 @@ async function freshLibrary(env: Env, profileId: string): Promise<{ loaded: (Loa
   if (!loaded) {
     return {
       loaded: null,
-      error: text('There is no OpenTV backup to read. Turn on OpenTV Backup in the app (Settings → Library → Backup), let it finish once, then ask again.', true),
+      error: text('There is no OpenTV backup to read. Turn on OpenTV Backup in the app (Profile → ••• → Settings → Library tab → Backup), let it finish once, then ask again.', true),
     };
   }
   const ops = await opsSince(env, profileId, loaded.asOf);
@@ -161,9 +161,9 @@ async function answer(env: Env, profileId: string, run: (lib: Library) => unknow
 export const ASSISTANT_DEVICE = 'assistant';
 
 export const NO_WRITE_SCOPE =
-  'This connection was made when OpenTV could only be read. To let it make changes, remove it in OpenTV (Settings → Claude & ChatGPT) and connect again.';
+  'This connection was made when OpenTV could only be read. To let it make changes, remove it in OpenTV (Profile → ••• → Settings → Library tab → Claude & ChatGPT) and connect again.';
 export const NO_SYNC =
-  'Changes reach your phone through Sync, and Sync is not on for this account. Turn it on in OpenTV: Settings → Library → Backup, choose OpenTV Backup (Sync comes on with it), then ask again.';
+  'Changes reach your phone through Sync, and Sync is not on for this account. Turn it on in OpenTV: Profile → ••• → Settings → Library tab → Backup, choose OpenTV Backup (Sync comes on with it), then ask again.';
 export const LANDS =
   'It reaches your phone the next time OpenTV is opened there (with Sync on); until then the app does not show it.';
 

@@ -399,7 +399,7 @@ describe('linking Claude: /authorize and the connections', () => {
     expect(res.text).toContain('Claude &#60;script&#62;');
     expect(res.text).not.toContain('<script>');
     expect(res.text).toContain('claude.ai');
-    expect(res.text).toContain('Settings → Claude &amp; ChatGPT');
+    expect(res.text).toContain('Settings → Library tab → Claude &amp; ChatGPT');
     expect(res.headers.get('X-Frame-Options') ?? res.headers.get('Content-Security-Policy')).toBeTruthy();
   });
 
@@ -717,7 +717,7 @@ describe('the MCP server: annotations, gates, relay, usage', () => {
     const t = new Date().toISOString();
     raw.prepare("INSERT INTO devices (profile_id, device, first_seen, last_seen, removed_at) VALUES ('p1', 'dev1', ?, ?, ?)").run(t, t, t);
     expect((await run('rate', { title: 'Inception', stars: 4 })).text).toBe(NO_SYNC);
-    expect(NO_SYNC).toContain('Settings → Library → Backup');
+    expect(NO_SYNC).toContain('Settings → Library tab → Backup');
 
     raw.prepare('UPDATE profiles SET is_plus = 0 WHERE id = ?').run('p1');
     expect((await run('rate', { title: 'Inception', stars: 4 })).text).toMatch(/does not include the Claude and ChatGPT connection/);
