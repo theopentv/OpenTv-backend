@@ -39,8 +39,6 @@ const CODE_BUDGET: Budget = { limit: 5, windowSeconds: 60 };
 /** Wrong codes typed into the page, per address. */
 const ATTEMPT_BUDGET: Budget = { limit: 10, windowSeconds: 600 };
 
-const codeKey = (code: string) => `mcp:code:${code}`;
-const codeOfKey = (profileId: string) => `mcp:code-of:${profileId}`;
 const consentKey = (handle: string) => `mcp:consent:${handle}`;
 
 /** Six uniform digits. Rejection sampling, because `% 1e6` on a 32-bit value
@@ -65,12 +63,12 @@ function sixDigits(): string {
  */
 export async function consumeCode(env: Env, code: string, nowMs: number): Promise<string | null> {
   if (!/^\d{6}$/.test(code)) return null;
-  const raw = await env.CACHE.get(codeKey(code), 'json');
-  if (!raw) return null;
-  await env.CACHE.delete(codeKey(code));
-  const v = raw as { p?: unknown; exp?: unknown };
-  if (typeof v.p !== 'string' || typeof v.exp !== 'number' || v.exp < nowMs) return null;
-  return v.p;
+  // Gone the moment it is read, in one statement: a code meets one page.
+  const row = await env.DB.prepare('DELETE FROM mcp_codes WHERE code = ? RETURNING profile_id, expires_at')
+    .bind(code)
+    .first<{ profile_id: string; expires_at: number }>();
+  if (!row || row.expires_at < nowMs) return null;
+  return row.profile_id;
 }
 
 mcp.post('/mcp/code', requireAuth, async (c) => {
@@ -87,19 +85,24 @@ mcp.post('/mcp/code', requireAuth, async (c) => {
     return fail(c, 409, 'no_backup', 'Turn on OpenTV Backup first: Claude and ChatGPT read your backup.');
   }
 
-  // A new code replaces the last one, so only the code on screen works.
-  const previous = await c.env.CACHE.get(codeOfKey(profileId));
-  if (previous) await c.env.CACHE.delete(codeKey(previous));
-
   const now = Date.now();
-  let code = sixDigits();
-  // Another member's live code: astronomically rare, and handing out a
-  // duplicate would link the wrong library, so it is checked rather than hoped.
-  for (let i = 0; i < 5 && (await c.env.CACHE.get(codeKey(code))); i++) code = sixDigits();
   const exp = now + CODE_TTL_SECONDS * 1000;
-  await c.env.CACHE.put(codeKey(code), JSON.stringify({ p: profileId, exp }), { expirationTtl: CODE_TTL_SECONDS });
-  await c.env.CACHE.put(codeOfKey(profileId), code, { expirationTtl: CODE_TTL_SECONDS });
-  return c.json({ code, expiresAt: new Date(exp).toISOString() });
+  // A new code replaces the last one, so only the code on screen works; and
+  // expired codes are swept while we are here.
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM mcp_codes WHERE profile_id = ? OR expires_at < ?').bind(profileId, now),
+  ]);
+  // Another member's live code: astronomically rare, and handing out a
+  // duplicate would link the wrong library, so the primary key refuses it and
+  // a fresh code is drawn.
+  for (let i = 0; i < 5; i++) {
+    const code = sixDigits();
+    const put = await c.env.DB.prepare('INSERT OR IGNORE INTO mcp_codes (code, profile_id, expires_at) VALUES (?, ?, ?)')
+      .bind(code, profileId, exp)
+      .run();
+    if (put.meta.changes === 1) return c.json({ code, expiresAt: new Date(exp).toISOString() });
+  }
+  return fail(c, 503, 'unavailable', 'Could not make a code, try again.');
 });
 
 // ── what is linked ───────────────────────────────────────────────────────────
