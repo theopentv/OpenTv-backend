@@ -100,8 +100,12 @@ describe('linking Claude with Google or Apple', () => {
     // Checked against our own client and the nonce this trip carried.
     expect(verify.mock.calls[0]![4]).toEqual({ audience: 'web-client', nonce });
     const pending = /name="pending" value="([^"]+)"/.exec(back.text)![1]!;
+    // The page is served from the callback's address, so the form must name
+    // where Allow goes, or the browser posts it back to the callback (7 Nov).
+    const action = /<form method="post" action="([^"]+)"/.exec(back.text)?.[1];
+    expect(action).toBe('/authorize');
 
-    const ok = await send(env, 'POST', '/authorize', { form: { handle, via: 'web', pending, decision: 'approve' }, cookie });
+    const ok = await send(env, 'POST', action!, { form: { handle, via: 'web', pending, decision: 'approve' }, cookie });
     expect(ok.status).toBe(302);
     expect(new URL(ok.headers.get('Location')!).searchParams.get('code')).toBeTruthy();
     expect((await env.OAUTH_PROVIDER!.listUserGrants('p1')).items).toHaveLength(1);

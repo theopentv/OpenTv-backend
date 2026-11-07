@@ -251,7 +251,7 @@ ${providers.map((p) => `<a class="btn" href="/authorize/${p}?handle=${encodeURIC
 ${v.redirectIsLoopback ? '<p class="warn">This sends access to an app on this computer. Continue only if you just started connecting from it.</p>' : ''}
 <p>It can read what is in your OpenTV backup: what you watched and when, your ratings and your lists.</p>
 <p>It can also mark episodes and films watched, rate them, add to your watchlist and set how an episode made you feel. ${name} asks you before each change, and it reaches your phone through Sync.</p>
-${buttons}<form method="post" autocomplete="off">
+${buttons}<form method="post" action="/authorize" autocomplete="off">
   <input type="hidden" name="handle" value="${escape(handle)}">
   <label for="code"><p>Enter the code from the OpenTV app: <strong>Profile → ••• → Settings → Library → Claude &amp; ChatGPT</strong> → Get a code.</p></label>
   ${codeError ? `<p class="err">${escape(codeError)}</p>` : ''}
@@ -260,7 +260,7 @@ ${buttons}<form method="post" autocomplete="off">
 </form>
 <details${emailError ? ' open' : ''}>
   <summary>No code? <strong>Sign in with your OpenTV email instead</strong></summary>
-  <form method="post">
+  <form method="post" action="/authorize">
     <input type="hidden" name="handle" value="${escape(handle)}">
     <input type="hidden" name="via" value="email">
     ${emailError ? `<p class="err">${escape(emailError)}</p>` : ''}
@@ -284,7 +284,7 @@ function signedInPage(v: ConsentView, handle: string, pending: string, label: st
     `<h1>Let ${name} use your OpenTV library?</h1>
 <p>Signed in with <strong>${escape(label)}</strong>. Access goes to <strong>${escape(v.redirectHost)}</strong>.</p>
 <p>It can read what is in your OpenTV backup and, asking you before each change, mark, rate and add to your watchlist through Sync.</p>
-<form method="post">
+<form method="post" action="/authorize">
   <input type="hidden" name="handle" value="${escape(handle)}">
   <input type="hidden" name="via" value="web">
   <input type="hidden" name="pending" value="${escape(pending)}">
