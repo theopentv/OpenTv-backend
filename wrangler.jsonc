@@ -112,6 +112,13 @@
     // (no trailing slash). For `wrangler dev`, override in .dev.vars:
     // MCP_ORIGIN=http://localhost:8787
     "MCP_ORIGIN": "https://theopentv.com",
+    // "Continue with Google / Apple" on /authorize (7 Nov). Google: the existing
+    // "OpenTV Web" client, with <MCP_ORIGIN>/authorize/google/callback added as a
+    // redirect URI. Apple: Services ID grouped under com.insightfy.opentv, return
+    // URL <MCP_ORIGIN>/authorize/apple/callback. The 2.5.0 website adds its own
+    // return URLs to these same two; nothing new is created for it.
+    "GOOGLE_WEB_CLIENT_ID": "452943907676-vf096glumrms1bna4dcjhrtjo61f5kd1.apps.googleusercontent.com",
+    "APPLE_SERVICE_ID": "com.insightfy.opentv.web",
     // Comma-separated: iOS, Android and **Web** client ids. Android sign-in
     // returns the *web* client id as `aud`, which is the classic trap. Filled
     // in when Google sign-in is wired up in the app; empty means every Google
