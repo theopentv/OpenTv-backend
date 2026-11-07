@@ -91,7 +91,10 @@ export const ADMIN_PAGE = `<!doctype html>
   .tbar b { font-size:10px; color:#c9c9cf; font-weight:600; margin-bottom:2px; white-space:nowrap; }
   .tavg { position:absolute; left:0; right:0; border-top:1px dashed #6b6b72; pointer-events:none; }
   .tlabs { display:flex; gap:3px; margin-top:4px; }
-  .tlabs span { flex:1; text-align:center; font-size:9px; color:#6b6b72; min-width:0; overflow:hidden; }
+  .tlabs span { flex:1; text-align:center; font-size:9px; color:#6b6b72; min-width:0; overflow:visible; white-space:nowrap; }
+  /* Past 90 days, one chart per row: a year of days needs the whole width. */
+  .trends.wide { grid-template-columns:1fr; }
+  .trends.wide .tbars, .trends.wide .tlabs { gap:1px; }
   .tfoot { font-size:11px; color:#6b6b72; margin-top:6px; }
   .row { display:flex; justify-content:space-between; align-items:center; gap:12px; }
   .acts { display:flex; gap:8px; }
@@ -251,6 +254,9 @@ export const ADMIN_PAGE = `<!doctype html>
       <button class="tab" data-days="14">14 days</button>
       <button class="tab on" data-days="30">30 days</button>
       <button class="tab" data-days="90">90 days</button>
+      <button class="tab" data-days="180">180 days</button>
+      <button class="tab" data-days="270">270 days</button>
+      <button class="tab" data-days="365">1 year</button>
     </div>
     <div class="trends" id="trends"><p class="note">Loading…</p></div>
     <h2>Daily puzzle</h2>
@@ -918,7 +924,7 @@ function drawTrend(key, title, kind, d) {
   const max = Math.max(1, ...vals);
   const best = vals.indexOf(Math.max(...vals));
   const showAll = d.days <= 30;
-  const every = d.days <= 14 ? 1 : d.days <= 30 ? 3 : 10;
+  const every = d.days <= 14 ? 1 : d.days <= 30 ? 3 : d.days <= 90 ? 10 : 30;
   // pct: the days themselves are already rates, so the summary is a weighted
   // rate over the period (people back / people joined), not a sum.
   let pctNow = null, pctBefore = null;
@@ -946,7 +952,9 @@ function drawTrend(key, title, kind, d) {
     return '<div class="' + cls + '" data-tip="' + tip + '">' + label + segs + '</div>';
   }).join('');
   const avgLine = avg > 0 ? '<div class="tavg" style="bottom:' + Math.round((avg / max) * 86) + '%" title="average ' + (Math.round(avg * 10) / 10) + '"></div>' : '';
-  const labs = cur.map((day, i) => '<span>' + ((i % every === 0 || i === cur.length - 1) ? shortDay(day) : '') + '</span>').join('');
+  // A weekday means nothing across a year: past 90 days the label is the date.
+  const dayLabel = (day) => d.days > 90 ? new Date(day + 'T00:00:00Z').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' }) : shortDay(day);
+  const labs = cur.map((day, i) => '<span>' + ((i % every === 0 || i === cur.length - 1) ? dayLabel(day) : '') + '</span>').join('');
   const foot = (total ? 'Best day: ' + shortDay(cur[best]) + ' (' + vals[best] + ')' : 'Nothing yet in this period') + (key === 'opened' && d.openedSince ? ' · counted since ' + d.openedSince : '') + (key === 'deletes' && d.days > 30 ? ' · deleted accounts are purged after 30 days, so older days read empty' : '');
   const legend = STACKS[key] ? '<div class="tfoot">' + STACKS[key].map(([, name, col]) => '<span style="color:' + col + '">■</span> ' + name).join(' &nbsp; ') + '</div>' : '';
   const note = key === 'returned' ? '<div class="tfoot">The last two days fill in once their next day is over.</div>'
@@ -1037,6 +1045,7 @@ async function loadTrends() {
   const res = await fetch('/v1/admin/trends?days=' + trendDays, { credentials: 'same-origin' });
   if (!res.ok) { $('trends').innerHTML = '<p class="note">Trends could not be read.</p>'; return; }
   const d = await res.json();
+  $('trends').classList.toggle('wide', trendDays > 90);
   $('trends').innerHTML = TRENDS.map(([k, t, kind]) => drawTrend(k, t, kind, d)).join('');
 }
 document.querySelectorAll('#trendtabs .tab').forEach((b) => b.addEventListener('click', () => {

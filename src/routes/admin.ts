@@ -1480,7 +1480,7 @@ admin.get('/admin/image/:id', async (c) => {
  * empty and the page says so), and comments and ratings written in the app
  * (imports left out, as on the cards). Cached like the stats.
  */
-export const TREND_DAYS = [14, 30, 90] as const;
+export const TREND_DAYS = [14, 30, 90, 180, 270, 365] as const;
 
 /**
  * The daily puzzle's numbers (`puzzle_days`). A streak is live while its owner

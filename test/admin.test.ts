@@ -487,7 +487,7 @@ describe('the dashboard trends and the seasonal calendar', () => {
     expect(res.json.series.opened).toEqual([{ day: today, n: 2, a: 1 }]);
     expect(res.json.series.ratings).toEqual([{ day: today, n: 1, p: 1 }]);
     // An unknown range falls back to thirty days rather than reading a year.
-    expect((await call(env, 'GET', '/v1/admin/trends?days=365', { headers: { Cookie: cookie } })).json.days).toBe(30);
+    expect((await call(env, 'GET', '/v1/admin/trends?days=400', { headers: { Cookie: cookie } })).json.days).toBe(30);
   });
 
   it('keeps off as off, follows the calendar in auto, and keeps a hand-picked event', async () => {
