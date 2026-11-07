@@ -3,7 +3,8 @@ import type { ConsentDescription } from '@cloudflare/workers-oauth-provider';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
 import { hasPlus, plusFor, requireAuth } from '@/middleware';
-import { normaliseEmail } from '@/pure';
+import { verifyIdToken } from '@/auth';
+import { normaliseEmail, type Provider } from '@/pure';
 import { overBudget, type Budget } from '@/rate-limit';
 import { bestBackupKey } from '@/routes/backup';
 import { checkEmailPassword } from '@/routes/email-auth';
@@ -53,6 +54,10 @@ const ATTEMPT_BUDGET: Budget = { limit: 10, windowSeconds: 600 };
 const EMAIL_BUDGET: Budget = { limit: 5, windowSeconds: 600 };
 
 const consentKey = (handle: string) => `mcp:consent:${handle}`;
+/** A trip to Google or Apple: which page it left from, and the nonce it carries. */
+const webKey = (state: string) => `mcp:web:${state}`;
+/** Signed in with Google or Apple, waiting for Allow on our own page. */
+const pendingKey = (token: string) => `mcp:pending:${token}`;
 
 /** Six uniform digits. Rejection sampling, because `% 1e6` on a 32-bit value
  *  makes the low codes slightly likelier — small, and free to avoid. */
@@ -194,6 +199,9 @@ function page(body: string, status = 200, headers?: Headers): Response {
   .allow { background: #FFD400; color: #000; }
   .deny { background: #1C1C1E; color: #fff; }
   small { color: #6B6B72; display: block; margin-top: 18px; }
+  a.btn { display: block; text-align: center; background: #fff; color: #000; text-decoration: none; border-radius: 10px;
+          padding: 14px; font-size: 17px; font-weight: 600; margin: 0 0 10px; }
+  p.or { text-align: center; margin: 16px 0; }
 </style></head><body><main>${body}</main></body></html>`,
     { status, headers: h },
   );
@@ -201,12 +209,39 @@ function page(body: string, status = 200, headers?: Headers): Response {
 
 /** Which form an error belongs to, and the address to put back after a wrong
  *  password (never the password). */
-type Failed = { via: 'code' | 'email'; error: string; email?: string };
+type Failed = { via: 'code' | 'email' | 'web'; error: string; email?: string };
 
-function consentPage(v: ConsentView, handle: string, failed: Failed | null, status = 200, headers?: Headers): Response {
+/**
+ * GOOGLE AND APPLE, AS THE APP SIGNS IN (7 Nov). A code from the phone was the
+ * hard step: most people reaching this page signed up with Google or Apple and
+ * have no password, so it was the code or nothing. The provider proves the same
+ * identity the app's own sign-in does, checked by the same function, so this is
+ * not a second account to secure. Each button appears once its client is set.
+ */
+const WEB_PROVIDERS: Record<Provider, { label: string; authUrl: string; clientId: (env: Env) => string | undefined }> = {
+  google: { label: 'Google', authUrl: 'https://accounts.google.com/o/oauth2/v2/auth', clientId: (env) => env.GOOGLE_WEB_CLIENT_ID },
+  apple: { label: 'Apple', authUrl: 'https://appleid.apple.com/auth/authorize', clientId: (env) => env.APPLE_SERVICE_ID },
+};
+const isProvider = (v: string): v is Provider => v === 'google' || v === 'apple';
+const webProviders = (env: Env): Provider[] => (['apple', 'google'] as const).filter((p) => !!WEB_PROVIDERS[p].clientId(env));
+
+function randomToken(): string {
+  const buf = new Uint8Array(24);
+  crypto.getRandomValues(buf);
+  return [...buf].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function consentPage(v: ConsentView, handle: string, failed: Failed | null, status = 200, headers?: Headers, providers: Provider[] = []): Response {
   const name = escape(v.clientName);
   const codeError = failed?.via === 'code' ? failed.error : null;
   const emailError = failed?.via === 'email' ? failed.error : null;
+  const webError = failed?.via === 'web' ? failed.error : null;
+  const buttons = providers.length
+    ? `<p>Sign in with the account you use in the OpenTV app:</p>
+${webError ? `<p class="err">${escape(webError)}</p>` : ''}
+${providers.map((p) => `<a class="btn" href="/authorize/${p}?handle=${encodeURIComponent(handle)}">Continue with ${WEB_PROVIDERS[p].label}</a>`).join('\n')}
+<p class="or">or</p>`
+    : '';
   const origin = v.clientDomain
     ? `Published by <strong>${escape(v.clientDomain)}</strong>.`
     : 'This app named itself; the name is not verified.';
@@ -216,7 +251,7 @@ function consentPage(v: ConsentView, handle: string, failed: Failed | null, stat
 ${v.redirectIsLoopback ? '<p class="warn">This sends access to an app on this computer. Continue only if you just started connecting from it.</p>' : ''}
 <p>It can read what is in your OpenTV backup: what you watched and when, your ratings and your lists.</p>
 <p>It can also mark episodes and films watched, rate them, add to your watchlist and set how an episode made you feel. ${name} asks you before each change, and it reaches your phone through Sync.</p>
-<form method="post" autocomplete="off">
+${buttons}<form method="post" autocomplete="off">
   <input type="hidden" name="handle" value="${escape(handle)}">
   <label for="code"><p>Enter the code from the OpenTV app: <strong>Profile → ••• → Settings → Library → Claude &amp; ChatGPT</strong> → Get a code.</p></label>
   ${codeError ? `<p class="err">${escape(codeError)}</p>` : ''}
@@ -242,6 +277,23 @@ ${v.redirectIsLoopback ? '<p class="warn">This sends access to an app on this co
   );
 }
 
+/** Back from Google or Apple: who they are, and the same Allow and Deny. */
+function signedInPage(v: ConsentView, handle: string, pending: string, label: string): Response {
+  const name = escape(v.clientName);
+  return page(
+    `<h1>Let ${name} use your OpenTV library?</h1>
+<p>Signed in with <strong>${escape(label)}</strong>. Access goes to <strong>${escape(v.redirectHost)}</strong>.</p>
+<p>It can read what is in your OpenTV backup and, asking you before each change, mark, rate and add to your watchlist through Sync.</p>
+<form method="post">
+  <input type="hidden" name="handle" value="${escape(handle)}">
+  <input type="hidden" name="via" value="web">
+  <input type="hidden" name="pending" value="${escape(pending)}">
+  <div class="row"><button class="deny" name="decision" value="deny">Deny</button><button class="allow" name="decision" value="approve" autofocus>Allow</button></div>
+</form>
+<small>Remove it any time in the app: Profile → ••• → Settings → Library → Claude &amp; ChatGPT.</small>`,
+  );
+}
+
 const stopped = (message: string, status = 400) =>
   page(`<h1>That didn't work</h1><p>${escape(message)}</p><p>Start connecting again from Claude or ChatGPT.</p>`, status);
 
@@ -261,7 +313,7 @@ mcpAuthorize.get('/authorize', async (c) => {
     };
     // Ten minutes, the handle's own life: long enough to fetch the code.
     await c.env.CACHE.put(consentKey(consent.handle), JSON.stringify(view), { expirationTtl: 600 });
-    return consentPage(view, consent.handle, null, 200, consent.headers);
+    return consentPage(view, consent.handle, null, 200, consent.headers, webProviders(c.env));
   } catch (e) {
     if (named(e, 'AuthorizationError') && e.redirectTo) return Response.redirect(e.redirectTo, 302);
     if (named(e, 'AuthorizationError')) return stopped(e.description ?? 'The request was not valid.');
@@ -312,6 +364,13 @@ mcpAuthorize.post('/authorize', async (c) => {
       // Past the password, so saying it concedes nothing to a stranger.
       if (!check.row.verified_at) return again('Confirm this email address in the OpenTV app first.', 403);
       profileId = check.row.profile_id;
+    } else if (form.get('via') === 'web') {
+      // Single use, and only for the page it was made for.
+      const pending = String(form.get('pending') ?? '');
+      const held = pending ? ((await c.env.CACHE.get(pendingKey(pending), 'json')) as { profileId: string; handle: string } | null) : null;
+      if (pending) await c.env.CACHE.delete(pendingKey(pending));
+      if (!held || held.handle !== handle) return stopped('This page has expired.');
+      profileId = held.profileId;
     } else {
       if (await overBudget(c.env, 'mcp-authorize', ip, ATTEMPT_BUDGET, now)) {
         return consentPage(view, handle, { via: 'code', error: 'Too many tries. Wait a few minutes, then get a new code.' }, 429);
@@ -324,7 +383,8 @@ mcpAuthorize.post('/authorize', async (c) => {
     }
     if (!(await plusFor(c.env, profileId))) {
       const error = 'This OpenTV account does not have Plus, which Claude and ChatGPT need.';
-      return consentPage(view, handle, { via: form.get('via') === 'email' ? 'email' : 'code', error }, 402);
+      const via = form.get('via') === 'email' ? 'email' : form.get('via') === 'web' ? 'web' : 'code';
+      return consentPage(view, handle, { via, error }, 402, undefined, webProviders(c.env));
     }
 
     // `offline_access` only when asked for; reading and writing always, which
@@ -347,4 +407,71 @@ mcpAuthorize.post('/authorize', async (c) => {
     if (named(e, 'AuthorizationError') || named(e, 'CimdFetchError')) return stopped('This page has expired or was already used.');
     throw e;
   }
+});
+
+/** The trip out: remember which page it left from, then off to the provider. */
+mcpAuthorize.get('/authorize/:provider', async (c) => {
+  const provider = c.req.param('provider');
+  if (!isProvider(provider)) return stopped('Unknown sign-in.', 404);
+  const clientId = WEB_PROVIDERS[provider].clientId(c.env);
+  const origin = c.env.MCP_ORIGIN;
+  if (!clientId || !origin) return stopped(`Signing in with ${WEB_PROVIDERS[provider].label} is not available here.`, 404);
+  const handle = c.req.query('handle') ?? '';
+  if (!handle || !(await c.env.CACHE.get(consentKey(handle)))) return stopped('This page has expired.');
+  const ip = c.req.header('CF-Connecting-IP') ?? '0.0.0.0';
+  if (await overBudget(c.env, 'mcp-authorize', ip, ATTEMPT_BUDGET, Date.now())) return stopped('Too many tries. Wait a few minutes.', 429);
+
+  const state = randomToken();
+  const nonce = randomToken();
+  await c.env.CACHE.put(webKey(state), JSON.stringify({ handle, nonce, provider }), { expirationTtl: 600 });
+  const q = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: `${origin}/authorize/${provider}/callback`,
+    // Google posts an id token; Apple will only post one alongside a code,
+    // which is never redeemed: the token is all this needs.
+    response_type: provider === 'apple' ? 'code id_token' : 'id_token',
+    response_mode: 'form_post',
+    state,
+    nonce,
+    ...(provider === 'google' ? { scope: 'openid', prompt: 'select_account' } : {}),
+  });
+  return new Response(null, { status: 302, headers: { Location: `${WEB_PROVIDERS[provider].authUrl}?${q}`, 'Cache-Control': 'no-store' } });
+});
+
+/**
+ * The trip back, a POST from Google or Apple. Nothing is approved here: the
+ * consent handle is bound to a cookie this cross-site POST may not carry, so
+ * the member lands on our own page and presses Allow there, as with a code.
+ */
+mcpAuthorize.post('/authorize/:provider/callback', async (c) => {
+  const provider = c.req.param('provider');
+  if (!isProvider(provider)) return stopped('Unknown sign-in.', 404);
+  const clientId = WEB_PROVIDERS[provider].clientId(c.env);
+  if (!clientId) return stopped(`Signing in with ${WEB_PROVIDERS[provider].label} is not available here.`, 404);
+  const form = await c.req.formData();
+  const state = String(form.get('state') ?? '');
+  const trip = state ? ((await c.env.CACHE.get(webKey(state), 'json')) as { handle: string; nonce: string; provider: string } | null) : null;
+  if (state) await c.env.CACHE.delete(webKey(state));
+  if (!trip || trip.provider !== provider) return stopped('This page has expired.');
+  const view = (await c.env.CACHE.get(consentKey(trip.handle), 'json')) as ConsentView | null;
+  if (!view) return stopped('This page has expired.');
+  const back = (error: string, status: number) => consentPage(view, trip.handle, { via: 'web', error }, status, undefined, webProviders(c.env));
+
+  const idToken = String(form.get('id_token') ?? '');
+  if (!idToken) return back(`${WEB_PROVIDERS[provider].label} did not sign you in. Try again.`, 400);
+  const verified = await verifyIdToken(c.env, provider, idToken, Date.now(), { audience: clientId, nonce: trip.nonce });
+  if (!verified.ok) return back(`${WEB_PROVIDERS[provider].label} sign-in could not be checked. Try again.`, 400);
+
+  const row = await c.env.DB.prepare(
+    `SELECT p.id FROM identities i JOIN profiles p ON p.id = i.profile_id
+      WHERE i.provider = ? AND i.external_id = ? AND p.deleted_at IS NULL`,
+  )
+    .bind(provider, verified.token.sub)
+    .first<{ id: string }>();
+  // Never an account made here: this page links an account, it does not open one.
+  if (!row) return back(`No OpenTV account uses this ${WEB_PROVIDERS[provider].label} account. Use the one you sign in with in the app.`, 404);
+
+  const pending = randomToken();
+  await c.env.CACHE.put(pendingKey(pending), JSON.stringify({ profileId: row.id, handle: trip.handle }), { expirationTtl: 600 });
+  return signedInPage(view, trip.handle, pending, verified.token.email ?? WEB_PROVIDERS[provider].label);
 });

@@ -49,6 +49,9 @@ export async function verifyIdToken(
   provider: Provider,
   token: string,
   nowMs: number,
+  /** The browser sign-in on `/authorize`: its own client as the audience, and
+   *  the nonce it sent, so a token minted for anything else is refused. */
+  web?: { audience: string; nonce: string },
 ): Promise<VerifyResult> {
   const parts = token.split('.');
   if (parts.length !== 3) return { ok: false, reason: 'malformed' };
@@ -75,8 +78,10 @@ export async function verifyIdToken(
   const payload = parseJson(decodeSegment(p));
   if (!payload) return { ok: false, reason: 'malformed_payload' };
 
-  const claims = verifyClaims(payload as IdTokenPayload, { provider, audiences: audiencesFor(env, provider) }, nowMs);
+  const audiences = web ? [web.audience] : audiencesFor(env, provider);
+  const claims = verifyClaims(payload as IdTokenPayload, { provider, audiences }, nowMs);
   if (!claims.ok) return { ok: false, reason: claims.reason };
+  if (web && (payload as { nonce?: unknown }).nonce !== web.nonce) return { ok: false, reason: 'bad_nonce' };
 
   return { ok: true, token: { sub: claims.sub, email: claims.email, emailVerified: claims.emailVerified } };
 }

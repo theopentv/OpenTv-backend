@@ -187,6 +187,14 @@ export type Env = {
   OAUTH_KV?: KVNamespace;
   OAUTH_PROVIDER?: OAuthHelpers;
   MCP_ORIGIN?: string;
+  /**
+   * Google and Apple on `/authorize` (7 Nov). Each button appears only once
+   * its id is set: the web OAuth client with
+   * `<MCP_ORIGIN>/authorize/google/callback` as a redirect URI, and an Apple
+   * Services ID with `<MCP_ORIGIN>/authorize/apple/callback` as a return URL.
+   */
+  GOOGLE_WEB_CLIENT_ID?: string;
+  APPLE_SERVICE_ID?: string;
 };
 
 /** What `requireAuth` puts on the context. */
