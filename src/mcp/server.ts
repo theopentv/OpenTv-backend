@@ -296,7 +296,7 @@ export function buildServer(env: Env, profileId: string, caller: Caller = { canW
     'search_library',
     {
       description:
-        "Find shows and films in the user's own OpenTV watch history by title (case and accent insensitive). For a show: episodes watched, first and last watch dates, favourite/followed/archived, average episode rating. For a film: watched or on the watchlist, latest watch date, rewatches, rating (1-5 stars). Use this first for 'did I watch X?' or 'what did I rate X?'.",
+        "Find shows and films in the user's own OpenTV watch history by title (case and accent insensitive). For a show: episodes watched, first and last watch dates, favourite/followed/archived, average episode rating. For a film: watched or on the watchlist, latest watch date, rewatches, rating (1-5 stars). Answers questions like 'did I watch X?' or 'what did I rate X?'.",
       inputSchema: z.object({ query: z.string().min(1).describe('Part of a title') }),
       annotations: READ_ONLY,
     },
@@ -307,7 +307,7 @@ export function buildServer(env: Env, profileId: string, caller: Caller = { canW
     'watch_history',
     {
       description:
-        'Episodes and films the user watched between two dates (inclusive), newest first, at most 200 items with a count of the rest. Use for "what did I watch last winter / in March 2024".',
+        'Episodes and films the user watched between two dates (inclusive), newest first, at most 200 items with a count of the rest. Answers questions like "what did I watch last winter / in March 2024".',
       inputSchema: z.object({
         from: isoDay.describe('First day, YYYY-MM-DD'),
         to: isoDay.describe('Last day, YYYY-MM-DD'),
@@ -322,7 +322,7 @@ export function buildServer(env: Env, profileId: string, caller: Caller = { canW
     'show_progress',
     {
       description:
-        "How far the user is in one show: per season, episodes watched and the last episode watched with its date, plus `reactions`: the feelings and favourite character the user picked per episode. For one episode in full (comments too), use episode_details.",
+        "How far the user is in one show: per season, episodes watched and the last episode watched with its date, plus `reactions`: the feelings and favourite character the user picked per episode. Comments are not included here.",
       inputSchema: z.object({ title: z.string().min(1).describe('The show title, or part of it') }),
       annotations: READ_ONLY,
     },
@@ -333,7 +333,7 @@ export function buildServer(env: Env, profileId: string, caller: Caller = { canW
     'episode_details',
     {
       description:
-        `Everything the user recorded about one episode: whether and when they watched it (every watch date), their rating (1-5 stars), the feelings they picked (${FEELINGS.join(', ')}), their favourite character, and their own comments on it with dates. Use for "how did I feel about…", "who was my favourite in…", "what did I say about…".`,
+        `Everything the user recorded about one episode: whether and when they watched it (every watch date), their rating (1-5 stars), the feelings they picked (${FEELINGS.join(', ')}), their favourite character, and their own comments on it with dates. Answers questions like "how did I feel about…", "who was my favourite in…", "what did I say about…".`,
       inputSchema: z.object({ show: z.string().min(1).describe('The show title'), season: season.describe('Season number'), episode: episode.describe('Episode number') }),
       annotations: READ_ONLY,
     },
@@ -399,7 +399,7 @@ export function buildServer(env: Env, profileId: string, caller: Caller = { canW
   register(
     'unmark_episode_watched',
     {
-      description: 'Remove an episode from the user\'s watch history (every watch of it). This ALSO removes the user\'s rating, feelings and favourite character for that episode (their comments stay): tell the user this before they approve. Use only when they ask to un-mark it.' + after,
+      description: 'Remove an episode from the user\'s watch history (every watch of it). This ALSO removes the user\'s rating, feelings and favourite character for that episode; their comments stay.' + after,
       inputSchema: z.object({ show: z.string().min(1).describe('The show title'), season: season.describe('Season number'), episode: episode.describe('Episode number') }),
       annotations: { ...WRITES, destructiveHint: true, idempotentHint: true },
     },
