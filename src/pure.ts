@@ -817,6 +817,31 @@ export function validateCommentBody(
   return { ok: true, body };
 }
 
+/** A link in words bound for CommsUni: held for a look, the usual shape of spam (§A11.1). */
+export function hasLink(text: string): boolean {
+  return /https?:\/\/|www\./i.test(text);
+}
+
+/**
+ * Llama Guard's verdict, from either shape Workers AI hands back: an object
+ * (`{ response: { safe, categories } }`) or the model's own text ("safe", or
+ * "unsafe" and a line of categories such as "S10"). null when it is neither,
+ * which a caller treats as "not checked", never as "safe".
+ */
+export function guardVerdict(out: unknown): { safe: boolean; categories: string[] } | null {
+  const r = (out as { response?: unknown } | null)?.response;
+  if (r && typeof r === 'object' && typeof (r as { safe?: unknown }).safe === 'boolean') {
+    const cats = (r as { categories?: unknown }).categories;
+    return { safe: (r as { safe: boolean }).safe, categories: Array.isArray(cats) ? cats.map(String) : [] };
+  }
+  if (typeof r !== 'string') return null;
+  const [first, second = ''] = r.trim().split('\n');
+  const word = first?.trim().toLowerCase();
+  if (word === 'safe') return { safe: true, categories: [] };
+  if (word === 'unsafe') return { safe: false, categories: second.split(',').map((s) => s.trim()).filter(Boolean) };
+  return null;
+}
+
 /**
  * A comment with a PICTURE and no words is a real comment.
  *

@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import type { App } from '@/env';
-import { fail } from '@/http';
+import { fail, type ErrorCode } from '@/http';
 import { hasPlus, requireAuth } from '@/middleware';
-import { isTranslateTarget, sourceLangOf, validateCommentBody } from '@/pure';
+import { guardVerdict, hasLink, isTranslateTarget, sourceLangOf, validateCommentBody } from '@/pure';
 import { runModel } from '@/routes/translate';
 
 /**
@@ -477,6 +477,108 @@ export function commsuniEntityRef(row: { target_source: string; target_key: stri
  * Only for an author whose LATEST consent is `share`; their identity choice
  * decides whether their OpenTV name goes with it or CommsUni's generated one.
  */
+/**
+ * THE CHECK BEFORE WORDS LEAVE FOR COMMSUNI (§A11.1 of the partner terms:
+ * "block or hold content that is unlawful, abusive, harassing, hateful,
+ * sexually explicit, spam"). A write is public in every connected app the
+ * moment it lands, so the check is here, before the call, not after a report.
+ *
+ * null = send it. Otherwise why it was held: a link (the usual shape of spam),
+ * Llama Guard's "unsafe" with its categories, or `check_failed` when the model
+ * could not answer. A check that did not run never counts as a pass.
+ */
+const GUARD = '@cf/meta/llama-guard-3-8b';
+export async function heldBecause(env: App['Bindings'], text: string): Promise<string | null> {
+  if (!text.trim()) return null;
+  if (hasLink(text)) return 'link';
+  if (!env.AI) return 'check_failed';
+  try {
+    const verdict = guardVerdict(await (env.AI.run as (m: string, i: unknown) => Promise<unknown>)(GUARD, { messages: [{ role: 'user', content: text }] }));
+    if (!verdict) return 'check_failed';
+    return verdict.safe ? null : `unsafe:${verdict.categories.join(',') || '?'}`;
+  } catch {
+    return 'check_failed';
+  }
+}
+
+async function hold(env: App['Bindings'], id: string, kind: 'share' | 'reply', me: string, body: string, reason: string, meta: unknown): Promise<void> {
+  await env.DB.prepare(
+    `INSERT OR IGNORE INTO commsuni_held (id, kind, profile_id, body, reason, meta, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(id, kind, me, body, reason, JSON.stringify(meta), new Date().toISOString())
+    .run();
+}
+
+type ShareResult = { ok: true; json: Record<string, unknown> } | { ok: false; status: 400 | 403 | 404 | 503; code: ErrorCode; message: string };
+
+/**
+ * One of our member's own comments, onto CommsUni. Shared by the route and by
+ * the dashboard's Release, which passes `checked` because a person has just
+ * read the words; nothing else skips the check.
+ */
+export async function shareComment(
+  env: App['Bindings'],
+  origin: string,
+  me: string,
+  id: string,
+  tvdbMovie: number | null,
+  checked = false,
+): Promise<ShareResult> {
+  const consent = await env.DB.prepare(
+    'SELECT decision, identity FROM commsuni_consent WHERE profile_id = ? ORDER BY decided_at DESC LIMIT 1',
+  )
+    .bind(me)
+    .first<{ decision: string; identity: string | null }>();
+  if (consent?.decision !== 'share') return { ok: false, status: 403, code: 'forbidden', message: 'Sharing is not on.' };
+
+  const row = await env.DB.prepare(
+    `SELECT c.target_source, c.target_key, c.season, c.episode, c.body, c.is_spoiler, c.lang, p.handle, p.display_name, p.avatar_key
+       FROM comments c JOIN profiles p ON p.id = c.author_id
+      WHERE c.id = ? AND c.author_id = ? AND c.parent_id IS NULL AND c.deleted_at IS NULL AND c.hidden_at IS NULL AND c.imported_at IS NULL`,
+  )
+    .bind(id, me)
+    .first<{ target_source: string; target_key: string; season: number | null; episode: number | null; body: string; is_spoiler: number; lang: string | null; handle: string; display_name: string | null; avatar_key: string | null }>();
+  if (!row) return { ok: false, status: 404, code: 'not_found', message: 'No such comment.' };
+  if (!row.body.trim()) return { ok: false, status: 400, code: 'invalid_body', message: 'Only comments with words are shared.' };
+  const ref = commsuniEntityRef(row, tvdbMovie);
+  if (!ref) return { ok: false, status: 400, code: 'invalid_body', message: 'This title is not on CommsUni.' };
+  const prior = await env.DB.prepare('SELECT commsuni_id FROM comments WHERE id = ?').bind(id).first<{ commsuni_id: string | null }>();
+  if (prior?.commsuni_id) return { ok: true, json: { ok: true, already: true, commsuni_id: prior.commsuni_id } };
+
+  if (!checked) {
+    // Held once is held until somebody looks: a retry from the phone does not get a second roll of the dice.
+    const open = await env.DB.prepare('SELECT 1 AS x FROM commsuni_held WHERE id = ? AND resolved IS NULL').bind(id).first();
+    if (open) return { ok: true, json: { ok: true, held: true, commsuni_id: null } };
+    const why = await heldBecause(env, row.body);
+    if (why) {
+      await hold(env, id, 'share', me, row.body, why, { tvdb_movie: tvdbMovie });
+      console.log(`[commsuni] held share ${id}: ${why}`);
+      return { ok: true, json: { ok: true, held: true, commsuni_id: null } };
+    }
+  }
+  if (await env.CACHE.get(COOLDOWN_KEY)) return { ok: false, status: 503, code: 'unavailable', message: 'Try again later.' };
+
+  const actor = await actorId(env.SESSION_SECRET, me);
+  try {
+    await sendOverlay(env, me, actor, consent.identity, row, origin);
+    const up = await upstream(env, `/entities/${ref}/comments`, actor, {
+      method: 'POST',
+      idempotencyKey: id,
+      body: { text: row.body, language: row.lang ?? undefined, isSpoiler: row.is_spoiler === 1 },
+    });
+    if (up.status === 429) await env.CACHE.put(COOLDOWN_KEY, '1', { expirationTtl: 60 });
+    const theirs = (up.body as { data?: { comment?: { id?: unknown } } } | null)?.data?.comment?.id;
+    if (up.status !== 201 && up.status !== 200) {
+      console.log(`[commsuni] share ${up.status} ${JSON.stringify((up.body as { error?: unknown } | null)?.error ?? null)}`);
+      return { ok: false, status: 503, code: 'unavailable', message: 'Try again later.' };
+    }
+    if (typeof theirs === 'string') await env.DB.prepare('UPDATE comments SET commsuni_id = ? WHERE id = ?').bind(theirs, id).run();
+    return { ok: true, json: { ok: true, commsuni_id: typeof theirs === 'string' ? theirs : null } };
+  } catch {
+    return { ok: false, status: 503, code: 'unavailable', message: 'Try again later.' };
+  }
+}
+
 commsuni.post('/commsuni/share', requireAuth, async (c) => {
   if (!c.env.COMMSUNI_API_KEY) return fail(c, 503, 'unavailable', 'CommsUni is not configured.');
   let b: { comment_id?: unknown; tvdb_movie?: unknown };
@@ -485,49 +587,9 @@ commsuni.post('/commsuni/share', requireAuth, async (c) => {
   } catch {
     return fail(c, 400, 'invalid_body', 'Body must be JSON.');
   }
-  const me = c.get('profileId');
   const id = typeof b.comment_id === 'string' ? b.comment_id : '';
-  const consent = await c.env.DB.prepare(
-    'SELECT decision, identity FROM commsuni_consent WHERE profile_id = ? ORDER BY decided_at DESC LIMIT 1',
-  )
-    .bind(me)
-    .first<{ decision: string; identity: string | null }>();
-  if (consent?.decision !== 'share') return fail(c, 403, 'forbidden', 'Sharing is not on.');
-
-  const row = await c.env.DB.prepare(
-    `SELECT c.target_source, c.target_key, c.season, c.episode, c.body, c.is_spoiler, c.lang, p.handle, p.display_name, p.avatar_key
-       FROM comments c JOIN profiles p ON p.id = c.author_id
-      WHERE c.id = ? AND c.author_id = ? AND c.parent_id IS NULL AND c.deleted_at IS NULL AND c.hidden_at IS NULL AND c.imported_at IS NULL`,
-  )
-    .bind(id, me)
-    .first<{ target_source: string; target_key: string; season: number | null; episode: number | null; body: string; is_spoiler: number; lang: string | null; handle: string; display_name: string | null; avatar_key: string | null }>();
-  if (!row) return fail(c, 404, 'not_found', 'No such comment.');
-  if (!row.body.trim()) return fail(c, 400, 'invalid_body', 'Only comments with words are shared.');
-  const ref = commsuniEntityRef(row, typeof b.tvdb_movie === 'number' ? b.tvdb_movie : null);
-  if (!ref) return fail(c, 400, 'invalid_body', 'This title is not on CommsUni.');
-  const prior = await c.env.DB.prepare('SELECT commsuni_id FROM comments WHERE id = ?').bind(id).first<{ commsuni_id: string | null }>();
-  if (prior?.commsuni_id) return c.json({ ok: true, already: true, commsuni_id: prior.commsuni_id });
-  if (await c.env.CACHE.get(COOLDOWN_KEY)) return fail(c, 503, 'unavailable', 'Try again later.');
-
-  const actor = await actorId(c.env.SESSION_SECRET, me);
-  try {
-    await sendOverlay(c.env, me, actor, consent.identity, row, new URL(c.req.url).origin);
-    const up = await upstream(c.env, `/entities/${ref}/comments`, actor, {
-      method: 'POST',
-      idempotencyKey: id,
-      body: { text: row.body, language: row.lang ?? undefined, isSpoiler: row.is_spoiler === 1 },
-    });
-    if (up.status === 429) await c.env.CACHE.put(COOLDOWN_KEY, '1', { expirationTtl: 60 });
-    const theirs = (up.body as { data?: { comment?: { id?: unknown } } } | null)?.data?.comment?.id;
-    if (up.status !== 201 && up.status !== 200) {
-      console.log(`[commsuni] share ${up.status} ${JSON.stringify((up.body as { error?: unknown } | null)?.error ?? null)}`);
-      return fail(c, 503, 'unavailable', 'Try again later.');
-    }
-    if (typeof theirs === 'string') await c.env.DB.prepare('UPDATE comments SET commsuni_id = ? WHERE id = ?').bind(theirs, id).run();
-    return c.json({ ok: true, commsuni_id: typeof theirs === 'string' ? theirs : null });
-  } catch {
-    return fail(c, 503, 'unavailable', 'Try again later.');
-  }
+  const r = await shareComment(c.env, new URL(c.req.url).origin, c.get('profileId'), id, typeof b.tvdb_movie === 'number' ? b.tvdb_movie : null);
+  return r.ok ? c.json(r.json) : fail(c, r.status, r.code, r.message);
 });
 
 /**
@@ -616,6 +678,14 @@ commsuni.post('/commsuni/reply', requireAuth, async (c) => {
   const sent = Number((await c.env.CACHE.get(capKey)) ?? 0);
   if (sent >= REPLIES_PER_HOUR) return fail(c, 429, 'rate_limited', 'Too many comments in the last hour.');
   if (await c.env.CACHE.get(COOLDOWN_KEY)) return fail(c, 503, 'unavailable', 'Try again later.');
+  // A reply lives only on CommsUni, so a held one cannot wait here: it is
+  // refused, and kept for the dashboard so a wrong call can be seen.
+  const why = await heldBecause(c.env, words);
+  if (why) {
+    await hold(c.env, clientId, 'reply', me, words, why, { parent });
+    console.log(`[commsuni] held reply ${clientId}: ${why}`);
+    return fail(c, 422, 'held', "This reply can't be posted to CommsUni. It may break the community rules.");
+  }
 
   const actor = await actorId(c.env.SESSION_SECRET, me);
   try {

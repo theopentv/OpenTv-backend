@@ -28,6 +28,8 @@ export type ErrorCode =
   | 'target_invalid'
   | 'too_large'
   | 'blocked'
+  // Words the check before CommsUni held (§A11.1): a reply that was not posted.
+  | 'held'
   // The image binding is absent from this deployment — a capability that is
   // off, not a request that was wrong.
   | 'unavailable'

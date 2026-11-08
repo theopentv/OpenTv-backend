@@ -4,7 +4,7 @@ import { Buffer } from 'node:buffer';
 import { Hono } from 'hono';
 import type { App, Env } from '@/env';
 import { fail } from '@/http';
-import { COMMSUNI_OFF_KEY } from '@/routes/commsuni';
+import { COMMSUNI_OFF_KEY, shareComment } from '@/routes/commsuni';
 import { FREE_MONTH_OPEN_KEY, freeMonthOpen } from '@/routes/free-month';
 import {
   constantTimeEqual,
@@ -330,6 +330,46 @@ admin.post('/admin/commsuni', async (c) => {
   if (body.on) await c.env.CACHE.delete(COMMSUNI_OFF_KEY);
   else await c.env.CACHE.put(COMMSUNI_OFF_KEY, '1');
   return c.json({ on: body.on }, 200, { 'Cache-Control': 'no-store' });
+});
+
+/** Words the check before CommsUni held (§A11.1), the open ones first. */
+admin.get('/admin/commsuni/held', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const { results } = await c.env.DB.prepare(
+    `SELECT h.id, h.kind, h.body, h.reason, h.created_at, p.handle
+       FROM commsuni_held h LEFT JOIN profiles p ON p.id = h.profile_id
+      WHERE h.resolved IS NULL ORDER BY h.created_at DESC LIMIT 50`,
+  ).all();
+  return c.json({ held: results }, 200, { 'Cache-Control': 'no-store' });
+});
+
+/**
+ * Release a held comment to CommsUni (a person has read it), or dismiss it.
+ * A held reply can only be dismissed: it was refused at the time and the
+ * person who wrote it already knows.
+ */
+admin.post('/admin/commsuni/held/:id', async (c) => {
+  if (!(await valid(c.env, cookieFrom(c.req.header('Cookie')), Date.now()))) {
+    return fail(c, 401, 'unauthenticated', 'Sign in first.');
+  }
+  const action = ((await c.req.json().catch(() => ({}))) as { action?: unknown }).action;
+  if (action !== 'release' && action !== 'dismiss') return fail(c, 400, 'invalid_body', 'action must be release or dismiss');
+  const row = await c.env.DB.prepare('SELECT kind, profile_id, meta FROM commsuni_held WHERE id = ? AND resolved IS NULL')
+    .bind(c.req.param('id'))
+    .first<{ kind: string; profile_id: string; meta: string | null }>();
+  if (!row) return fail(c, 404, 'not_found', 'Nothing open with that id.');
+  if (action === 'release') {
+    if (row.kind !== 'share') return fail(c, 400, 'invalid_body', 'A held reply can only be dismissed.');
+    const meta = JSON.parse(row.meta ?? '{}') as { tvdb_movie?: number | null };
+    const r = await shareComment(c.env, new URL(c.req.url).origin, row.profile_id, c.req.param('id'), meta.tvdb_movie ?? null, true);
+    if (!r.ok) return fail(c, r.status, r.code, r.message);
+  }
+  await c.env.DB.prepare('UPDATE commsuni_held SET resolved = ?, resolved_at = ? WHERE id = ?')
+    .bind(action === 'release' ? 'released' : 'dismissed', new Date().toISOString(), c.req.param('id'))
+    .run();
+  return c.json({ ok: true }, 200, { 'Cache-Control': 'no-store' });
 });
 
 // ── The free month (2.0.3) ───────────────────────────────────────────────────

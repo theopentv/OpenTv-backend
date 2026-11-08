@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Env } from '@/env';
 import { call, freshDatabase, insertProfile, makeEnv, tokenFor } from './harness';
 
@@ -66,6 +66,38 @@ describe('the admin dashboard', () => {
     const res = await call(env, 'GET', '/v1/admin/commsuni', { headers: { Cookie: cookie } });
     expect(res.json.today).toEqual({ read: 7, media: 0, write: 0 });
     expect(res.json.days30.read).toBe(7);
+  });
+
+  it('lists a held comment, releases it to CommsUni, and dismisses a held reply', async () => {
+    raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'a', 'a', '2026-09-29')`).run();
+    raw.prepare(
+      `INSERT INTO comments (id, author_id, target_source, target_key, season, episode, body, is_spoiler, lang, parent_id, imported_at, created_at, like_count)
+       VALUES ('c1', 'p1', 'tvdb', '289590', 1, 2, 'that twist', 0, 'en', NULL, NULL, '2026-10-02T10:00:00Z', 0)`,
+    ).run();
+    raw.prepare(`INSERT INTO commsuni_consent (id, profile_id, decision, identity, prompt_version, covers_existing, decided_at) VALUES ('k', 'p1', 'share', 'persona', 1, 0, '2026-10-05')`).run();
+    const held = raw.prepare(`INSERT INTO commsuni_held (id, kind, profile_id, body, reason, meta, created_at) VALUES (?, ?, 'p1', ?, ?, '{}', '2026-11-08')`);
+    held.run('c1', 'share', 'that twist', 'check_failed');
+    held.run('client-1', 'reply', 'nasty words', 'unsafe:S10');
+    env = { ...env, COMMSUNI_API_KEY: 'tvta_live_test' };
+    const posted: string[] = [];
+    vi.stubGlobal('fetch', async (url: string, init: { method?: string }) => {
+      if (init.method === 'POST') posted.push(url);
+      return url.endsWith('/comments') ? new Response(JSON.stringify({ data: { comment: { id: 'cu1' } } }), { status: 201 }) : new Response(null, { status: 204 });
+    });
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    const list = await call(env, 'GET', '/v1/admin/commsuni/held', { headers: { Cookie: cookie } });
+    expect(list.json.held.map((h: { id: string }) => h.id).sort()).toEqual(['c1', 'client-1']);
+
+    // A reply was refused at the time: it cannot be released, only dismissed.
+    expect((await call(env, 'POST', '/v1/admin/commsuni/held/client-1', { headers: { Cookie: cookie }, body: { action: 'release' } })).status).toBe(400);
+    expect((await call(env, 'POST', '/v1/admin/commsuni/held/client-1', { headers: { Cookie: cookie }, body: { action: 'dismiss' } })).status).toBe(200);
+
+    // Release skips the check (a person read it) and the comment reaches CommsUni.
+    expect((await call(env, 'POST', '/v1/admin/commsuni/held/c1', { headers: { Cookie: cookie }, body: { action: 'release' } })).status).toBe(200);
+    expect(posted).toEqual(['https://api.commsuni.tv/v1/entities/episode/tvdb-289590-s1e2/comments']);
+    expect(raw.prepare(`SELECT commsuni_id FROM comments WHERE id = 'c1'`).get()).toEqual({ commsuni_id: 'cu1' });
+    expect((await call(env, 'GET', '/v1/admin/commsuni/held', { headers: { Cookie: cookie } })).json.held).toEqual([]);
+    vi.unstubAllGlobals();
   });
 
   it('answers stats with the cookie it just issued', async () => {

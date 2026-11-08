@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isHandleValid, publicCoverFrame, slug, sourceLangOf, targetKey, validateCoverFrame, validCoverUrl } from '@/pure';
+import { guardVerdict, hasLink, isHandleValid, publicCoverFrame, slug, sourceLangOf, targetKey, validateCoverFrame, validCoverUrl } from '@/pure';
 
 /**
  * The allow-list IS the moderation story for covers — it is the only thing
@@ -189,5 +189,24 @@ describe('the seasonal calendar', () => {
     expect(nextScheduledChange('2026-10-12')).toEqual({ day: '2026-11-01', event: 'muertos' });
     expect(nextScheduledChange('2026-11-02')).toEqual({ day: '2026-11-03', event: null });
     expect(nextScheduledChange('2026-11-03')).toEqual({ day: '2026-12-01', event: 'christmas' });
+  });
+});
+
+describe('the check before words go to CommsUni (§A11.1)', () => {
+  it('reads both shapes of a Llama Guard verdict', () => {
+    expect(guardVerdict({ response: { safe: true, categories: [] } })).toEqual({ safe: true, categories: [] });
+    expect(guardVerdict({ response: { safe: false, categories: ['S10'] } })).toEqual({ safe: false, categories: ['S10'] });
+    expect(guardVerdict({ response: 'safe' })).toEqual({ safe: true, categories: [] });
+    expect(guardVerdict({ response: '\n\nunsafe\nS1,S10' })).toEqual({ safe: false, categories: ['S1', 'S10'] });
+  });
+  it('never reads an unknown answer as safe', () => {
+    expect(guardVerdict(null)).toBeNull();
+    expect(guardVerdict({ response: 'I think it is fine' })).toBeNull();
+    expect(guardVerdict({ response: { categories: [] } })).toBeNull();
+  });
+  it('spots a link', () => {
+    expect(hasLink('watch free at https://spam.example')).toBe(true);
+    expect(hasLink('www.example.com')).toBe(true);
+    expect(hasLink('That ending, wow. 10/10')).toBe(false);
   });
 });

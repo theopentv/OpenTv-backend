@@ -10,6 +10,9 @@ import type { Env } from '@/env';
 import { commsuniPath, kvKey, refreshCommsuniProfile, trimComment } from '@/routes/commsuni';
 import { call, freshDatabase, makeEnv, tokenFor } from './harness';
 
+/** Llama Guard, answering "safe": the check before CommsUni (§A11.1) needs a model to ask. */
+const SAFE_AI = { run: async () => ({ response: { safe: true, categories: [] } }) } as unknown as Env['AI'];
+
 describe('commsuniPath', () => {
   it('addresses an episode by show id, season and episode', () => {
     expect(commsuniPath({ type: 'episode', id: '289590', season: '1', episode: '2' })).toBe(
@@ -74,7 +77,7 @@ describe('GET /v1/commsuni/comments', () => {
   beforeEach(() => {
     const fresh = freshDatabase();
     fresh.raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'a', 'a', '2026-09-29')`).run();
-    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test' };
+    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test', AI: SAFE_AI };
     calls = [];
     reply = { status: 200, body: { data: { comments: [{ id: 'c1', text: 'great', origin: { kind: 'tvtime', slug: 'tvtime' } }], nextCursor: null } } };
     vi.stubGlobal('fetch', async (url: string, init: { headers: Record<string, string> }) => {
@@ -228,7 +231,7 @@ describe('GET /v1/commsuni/replies', () => {
   beforeEach(() => {
     const fresh = freshDatabase();
     fresh.raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'a', 'a', '2026-09-29')`).run();
-    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test' };
+    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test', AI: SAFE_AI };
     urls = [];
     vi.stubGlobal('fetch', async (url: string) => {
       urls.push(url);
@@ -264,7 +267,7 @@ describe('POST /v1/commsuni/share', () => {
     say.run('mine', 'p1', 'great episode', null);
     say.run('theirs', 'p2', 'not yours', null);
     say.run('reply', 'p1', 'a reply', 'theirs');
-    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test' };
+    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test', AI: SAFE_AI };
     sent = [];
     vi.stubGlobal('fetch', async (url: string, init: { method?: string; headers: Record<string, string>; body?: string }) => {
       sent.push({ url, method: init.method ?? 'GET', headers: new Headers(init.headers), body: init.body ? JSON.parse(init.body) : null });
@@ -316,6 +319,62 @@ describe('POST /v1/commsuni/share', () => {
     expect(sent.filter((s) => s.method === 'POST')).toHaveLength(0);
   });
 
+  describe('the check before sending (§A11.1)', () => {
+    const verdict = (response: unknown) => ({ run: async () => ({ response }) }) as unknown as Env['AI'];
+    const heldRows = () => raw.prepare('SELECT id, kind, reason, resolved FROM commsuni_held').all();
+    const posts = () => sent.filter((s) => s.method === 'POST');
+
+    it('holds an unsafe comment on OpenTV: nothing reaches CommsUni', async () => {
+      consent('share', 'profile');
+      env = { ...env, AI: verdict({ safe: false, categories: ['S10'] }) };
+      const res = await share('mine');
+      expect(res.status).toBe(200);
+      expect(res.json).toEqual({ ok: true, held: true, commsuni_id: null });
+      expect(sent).toHaveLength(0); // not even the profile overlay
+      expect(heldRows()).toEqual([{ id: 'mine', kind: 'share', reason: 'unsafe:S10', resolved: null }]);
+    });
+
+    it('holds a comment with a link without asking the model', async () => {
+      consent('share', 'profile');
+      raw.prepare(`UPDATE comments SET body = 'free stream at https://spam.example' WHERE id = 'mine'`).run();
+      let asked = 0;
+      env = { ...env, AI: { run: async () => { asked++; return { response: { safe: true } }; } } as unknown as Env['AI'] };
+      expect((await share('mine')).json).toMatchObject({ held: true });
+      expect(asked).toBe(0);
+      expect(heldRows()).toMatchObject([{ reason: 'link' }]);
+    });
+
+    it('a check that cannot run is not a pass', async () => {
+      consent('share', 'profile');
+      env = { ...env, AI: { run: async () => { throw new Error('down'); } } as unknown as Env['AI'] };
+      expect((await share('mine')).json).toMatchObject({ held: true });
+      env = { ...env, AI: undefined };
+      raw.prepare('DELETE FROM commsuni_held').run();
+      expect((await share('mine')).json).toMatchObject({ held: true });
+      expect(posts()).toHaveLength(0);
+      expect(heldRows()).toMatchObject([{ reason: 'check_failed' }]);
+    });
+
+    it('held stays held: a retry does not get a second roll of the dice', async () => {
+      consent('share', 'profile');
+      env = { ...env, AI: verdict({ safe: false, categories: ['S1'] }) };
+      await share('mine');
+      env = { ...env, AI: SAFE_AI };
+      expect((await share('mine')).json).toMatchObject({ held: true });
+      expect(posts()).toHaveLength(0);
+    });
+
+    it('refuses an unsafe reply and keeps it for the dashboard', async () => {
+      consent('share', 'profile');
+      env = { ...env, AI: verdict('unsafe\nS10') };
+      const res = await reply({ parent: PARENT, text: 'something hateful', client_id: 'client-9999' });
+      expect(res.status).toBe(422);
+      expect(res.json.error.code).toBe('held');
+      expect(posts()).toHaveLength(0);
+      expect(heldRows()).toEqual([{ id: 'client-9999', kind: 'reply', reason: 'unsafe:S10', resolved: null }]);
+    });
+  });
+
   it('posts a reply under the parent, keyed by the client id', async () => {
     consent('share', 'profile');
     const res = await reply({ parent: PARENT, text: ' agreed ', client_id: 'client-1234' });
@@ -338,7 +397,7 @@ describe('GET /v1/commsuni/media/:id', () => {
   beforeEach(() => {
     const fresh = freshDatabase();
     fresh.raw.prepare(`INSERT INTO profiles (id, handle, handle_lower, created_at) VALUES ('p1', 'a', 'a', '2026-09-29')`).run();
-    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test' };
+    env = { ...makeEnv(fresh.db), COMMSUNI_API_KEY: 'tvta_live_test', AI: SAFE_AI };
     calls = [];
     store.clear();
     grant = { status: 'granted', url: 'https://media.commsuni.tv/signed/abc' };

@@ -244,6 +244,10 @@ export const ADMIN_PAGE = `<!doctype html>
     <dialog id="chatdlg"><h3 id="chatt"></h3><div id="chatb"></div>
       <textarea id="chatin" placeholder="Reply — it reaches them as a notification"></textarea>
       <div class="chatbtns"><button onclick="document.getElementById('chatdlg').close()">Close</button><button id="chatsend">Send</button></div></dialog>
+    <!-- §A11.1: words the check held before they reached CommsUni. Empty most days. -->
+    <div id="heldbox" hidden><h2>Held for CommsUni <span id="heldcount"></span></h2>
+      <p class="note">Checked before sending (a link, or Llama Guard said unsafe). A comment stays on OpenTV until you release it; a reply was refused.</p>
+      <div id="held"></div></div>
     <h2>People</h2>
     <p class="note">"Today" here means since 03:00 Iraq time (midnight UTC). Every time on this page is shown in Iraq time.</p>
     <!-- One grid, two fillers: CommsUni's calls take the empty end of the last row. -->
@@ -841,6 +845,8 @@ async function load() {
 
   await loadThreads();
 
+  await loadHeld();
+
   await loadReview();
 
   await loadTemplates();
@@ -1269,6 +1275,32 @@ let reviewStatus = 'pending';
 // One member's queue (click a picture's @handle). Empty = everyone.
 let reviewHandle = '';
 
+
+// ── Held for CommsUni (§A11.1) ─────────────────────────────────────────────
+async function loadHeld() {
+  const res = await fetch('/v1/admin/commsuni/held', { credentials: 'same-origin' });
+  if (!res.ok) return;
+  const { held } = await res.json();
+  const e = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+  $('heldbox').hidden = !held.length;
+  $('heldcount').textContent = held.length ? '(' + held.length + ')' : '';
+  $('held').innerHTML = held.map((h) =>
+    '<div class="thread" style="cursor:default">' +
+    '<span class="who">' + e(h.handle ? '@' + h.handle : '?') + ' · ' + e(h.kind) + '</span>' +
+    '<span class="last" style="white-space:normal">' + e(h.body) + '</span>' +
+    '<span class="note">' + e(h.reason) + ' · ' + e(baghdad(h.created_at)) + '</span>' +
+    (h.kind === 'share' ? '<button data-act="release" data-id="' + e(h.id) + '">Release</button>' : '') +
+    '<button class="ghost" data-act="dismiss" data-id="' + e(h.id) + '">Dismiss</button></div>').join('');
+  for (const b of $('held').querySelectorAll('button')) b.onclick = async () => {
+    b.disabled = true;
+    const r = await fetch('/v1/admin/commsuni/held/' + encodeURIComponent(b.dataset.id), {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: b.dataset.act }),
+    });
+    if (!r.ok) { b.disabled = false; alert('Could not ' + b.dataset.act + ': ' + r.status); return; }
+    await loadHeld();
+  };
+}
 
 // ── Messages ("Message the developer", 1.6.7) ──────────────────────────────
 const escm = (v) => String(v ?? '').replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
