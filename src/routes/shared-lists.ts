@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { App } from '@/env';
 import { fail } from '@/http';
-import { hasPlus, requireAuth } from '@/middleware';
+import { requireAuth } from '@/middleware';
 import { plusOn } from '@/pure';
 
 /**
@@ -37,8 +37,8 @@ const MAX_MEMBERS = 20;
  * `shared_list_positions`, overwritten, never a history (§0).
  *
  * PLUS, AND EXACTLY WHERE (D11). Only STARTING one needs Plus — `POST
- * /shared-lists` with `kind: 'together'`, every time, not past a free first.
- * Everything after that stays open at every tier, including for a creator
+ * /shared-lists` with `kind: 'together'`, past a free first (2.4.0; it was
+ * every time before). Everything after that stays open at every tier, including for a creator
  * whose Plus has lapsed: join, both GETs, PUT/DELETE position, leave, delete,
  * rotate the invite. A lapse freezing a friend's progress strip would punish
  * the friend for somebody else's subscription.
@@ -203,35 +203,42 @@ sharedLists.post('/shared-lists', requireAuth, async (c) => {
   if (kind === 'together') name = name.slice(0, MAX_NAME);
   if (!name || name.length > MAX_NAME) return fail(c, 400, 'invalid_body', 'A name is required.');
 
-  if (kind === 'together') {
-    // ALWAYS PLUS, not past a free first: there is no free together (§2.7).
-    // Joining one stays free, and so does everything after starting (D11).
-    if (!(await hasPlus(c))) {
-      return fail(c, 403, 'plus_required', 'Watching together needs OpenTV Plus.');
-    }
-  } else {
-    /*
-     * THE CAP IS ON LISTS THIS PERSON STARTED, never on lists they are in. A
-     * member of nine lists who has started none is not near any limit. And on
-     * ORDINARY lists only: a together already cost Plus, so it must not also
-     * use up the free list a lapsed subscriber still has.
-     */
-    const owned = await c.env.DB.prepare(
-      "SELECT COUNT(*) AS n FROM shared_lists WHERE owner_id = ? AND kind = 'list' AND deleted_at IS NULL",
-    )
-      .bind(me)
-      .first<{ n: number }>();
+  /*
+   * THE CAP IS ON LISTS THIS PERSON STARTED, never on lists they are in. A
+   * member of nine lists who has started none is not near any limit.
+   *
+   * ONE FREE OF EACH KIND (2.4.0), counted separately: a first together does
+   * not use up the first ordinary list, or the other way round. Watching
+   * together lost its "Plus every time" rule — the first is how anybody finds
+   * out it is worth paying for.
+   *
+   * DELETING DOES NOT REFUND A LIST SOMEBODY JOINED. Without that, the free
+   * list is a free subscription: start, share, watch, delete, start again. So
+   * a deleted list still counts once `was_shared` is set (on the first
+   * non-owner join, never cleared). One nobody ever joined was a draft, and
+   * deleting it gives the free one back.
+   *
+   * ponytail: the owner's live, never-shared list counts while it exists —
+   * they still have it, so it is still their free one.
+   */
+  const used = await c.env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM shared_lists WHERE owner_id = ? AND kind = ? AND (deleted_at IS NULL OR was_shared = 1)',
+  )
+    .bind(me, kind)
+    .first<{ n: number }>();
 
-    if ((owned?.n ?? 0) >= FREE_OWNED_LISTS) {
-      const owner = await c.env.DB.prepare(
-        'SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL',
-      )
-        .bind(me)
-        .first<{ is_plus: number; plus_until: string | null }>();
-      if (!owner) return fail(c, 401, 'unauthenticated', 'No such profile.');
-      if (!plusOn(owner, new Date().toISOString())) {
-        return fail(c, 403, 'plus_required', 'Starting another shared list needs OpenTV Plus.');
-      }
+  if ((used?.n ?? 0) >= FREE_OWNED_LISTS) {
+    const owner = await c.env.DB.prepare('SELECT is_plus, plus_until FROM profiles WHERE id = ? AND deleted_at IS NULL')
+      .bind(me)
+      .first<{ is_plus: number; plus_until: string | null }>();
+    if (!owner) return fail(c, 401, 'unauthenticated', 'No such profile.');
+    if (!plusOn(owner, new Date().toISOString())) {
+      return fail(
+        c,
+        403,
+        'plus_required',
+        kind === 'together' ? 'Watching another show together needs OpenTV Plus.' : 'Starting another shared list needs OpenTV Plus.',
+      );
     }
   }
 
@@ -300,11 +307,15 @@ sharedLists.post('/shared-lists/join', requireAuth, async (c) => {
    * NO PLUS CHECK, AND THERE NEVER WILL BE ONE. Charging to accept an invite
    * makes the paid feature a room with one person in it.
    */
-  await c.env.DB.prepare(
-    "INSERT INTO shared_list_members (list_id, member_id, role, joined_at) VALUES (?, ?, 'member', ?)",
-  )
-    .bind(list.id, me, new Date().toISOString())
-    .run();
+  // SHARED, FOR GOOD: from here on deleting the list no longer gives its owner
+  // the free one back (see the cap in POST /shared-lists). Never cleared, so
+  // the friend leaving again changes nothing.
+  await c.env.DB.batch([
+    c.env.DB.prepare(
+      "INSERT INTO shared_list_members (list_id, member_id, role, joined_at) VALUES (?, ?, 'member', ?)",
+    ).bind(list.id, me, new Date().toISOString()),
+    c.env.DB.prepare('UPDATE shared_lists SET was_shared = 1 WHERE id = ?').bind(list.id),
+  ]);
 
   return c.json({ id: list.id, name: list.name, kind: list.kind, joined: true });
 });
@@ -356,7 +367,7 @@ sharedLists.get('/shared-lists/:id', requireAuth, async (c) => {
   if (!list) return fail(c, 404, 'not_found', 'No such list.');
 
   const members = await c.env.DB.prepare(
-    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until, m.role,
+    `SELECT p.id, p.handle, p.display_name, p.avatar_key, p.is_plus, p.plus_until, m.role, m.mark_together,
             (SELECT COUNT(*) FROM shared_list_watched w
                JOIN shared_list_items i ON i.id = w.item_id
               WHERE w.member_id = p.id AND i.list_id = ?) AS watched
@@ -373,6 +384,7 @@ sharedLists.get('/shared-lists/:id', requireAuth, async (c) => {
       is_plus: number;
       plus_until: string | null;
       role: string;
+      mark_together: number;
       watched: number;
     }>();
 
@@ -450,6 +462,8 @@ sharedLists.get('/shared-lists/:id', requireAuth, async (c) => {
       watched_by: i.watched_by ? i.watched_by.split(',') : [],
       positions: positions.get(i.id) ?? [],
     })),
+    // Members of a together only, like the positions it acts on (2.4.0).
+    ...(member && list.kind === 'together' ? { mark_together: markTogether(members.results ?? [], me) } : {}),
   });
 });
 
@@ -642,6 +656,60 @@ sharedLists.delete('/shared-lists/:id/items/:itemId/position', requireAuth, asyn
     .bind(itemId, me)
     .run();
   return c.json({ ok: true });
+});
+
+// ── PUT /v1/shared-lists/:id/mark-together ─────────────────────────────────
+
+/**
+ * "MARK IT FOR BOTH OF US" (2.4.0). Each member's own switch; the marking is
+ * the PHONE'S, which copies a friend's position into its own library when
+ * `all` is true. The server only says whether everybody agreed — it learns no
+ * episode it did not already hold as a position (§0).
+ *
+ * EVERYBODY, AND AT LEAST TWO. One person's switch never writes into another
+ * person's library: it is only on for anybody once every member has turned it
+ * on, and a together of one has nobody to follow. A member joining later
+ * starts off, so `all` goes false until they agree too.
+ *
+ * NO PLUS. It changes nothing on the server, and a together already paid (or
+ * was the free one) when it was started (D11).
+ */
+function markTogether(members: { id: string; mark_together: number }[], me: string) {
+  return {
+    me: members.some((m) => m.id === me && m.mark_together === 1),
+    all: members.length >= 2 && members.every((m) => m.mark_together === 1),
+  };
+}
+
+sharedLists.put('/shared-lists/:id/mark-together', requireAuth, async (c) => {
+  const me = c.get('profileId');
+  const id = c.req.param('id');
+  const membership = await membershipOf(c.env.DB, id, me);
+  if (!membership) return fail(c, 404, 'not_found', 'No such list.');
+  if (membership.kind !== 'together') return fail(c, 403, 'forbidden', 'Only a together marks for both.');
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return fail(c, 400, 'invalid_body', 'Body must be JSON.');
+  }
+  const on = (body as { on?: unknown } | null)?.on;
+  if (typeof on !== 'boolean') return fail(c, 400, 'invalid_body', 'on is true or false.');
+
+  // Only ever the caller's own row — `member_id` is the session, never the body.
+  await c.env.DB.prepare('UPDATE shared_list_members SET mark_together = ? WHERE list_id = ? AND member_id = ?')
+    .bind(on ? 1 : 0, id, me)
+    .run();
+  // The same members the detail GET counts: accounts still standing.
+  const rows = await c.env.DB.prepare(
+    `SELECT m.member_id AS id, m.mark_together FROM shared_list_members m
+       JOIN profiles p ON p.id = m.member_id AND p.deleted_at IS NULL
+      WHERE m.list_id = ?`,
+  )
+    .bind(id)
+    .all<{ id: string; mark_together: number }>();
+  return c.json({ ok: true, mark_together: markTogether(rows.results ?? [], me) });
 });
 
 // ── PATCH /v1/shared-lists/:id ──────────────────────────────────────────────

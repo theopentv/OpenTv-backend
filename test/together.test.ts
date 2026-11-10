@@ -6,8 +6,8 @@ import type { Env } from '@/env';
  * Watching together (2.0.0, design §2) — a shared list of one show whose tick
  * became a position.
  *
- * What is worth pinning: that STARTING always needs Plus and joining never
- * does, that a lapse freezes nothing already running (D11), that five is the
+ * What is worth pinning: that STARTING past a free first needs Plus and
+ * joining never does, that a lapse freezes nothing already running (D11), that five is the
  * ceiling (D9), that the server holds one overwritten cursor per member and
  * nothing more, that a visitor never sees it, and that it goes with the pair.
  */
@@ -35,11 +35,35 @@ const put = (env: Env, token: string, id: string, itemId: string, body: unknown)
   call(env, 'PUT', `/v1/shared-lists/${id}/items/${itemId}/position`, { token, body });
 
 describe('starting a together', () => {
-  it('needs Plus EVERY time — there is no free first one', async () => {
+  it('the first is free; a second needs Plus (2.4.0 — it was Plus every time)', async () => {
     const { env, friend } = await world();
-    const res = await call(env, 'POST', '/v1/shared-lists', { token: friend, body: { kind: 'together', item: SHOW } });
-    expect(res.status).toBe(403);
-    expect(res.json.error.code).toBe('plus_required');
+    const first = await call(env, 'POST', '/v1/shared-lists', { token: friend, body: { kind: 'together', item: SHOW } });
+    expect(first.status).toBe(200);
+    const second = await call(env, 'POST', '/v1/shared-lists', { token: friend, body: { kind: 'together', item: SHOW } });
+    expect(second.status).toBe(403);
+    expect(second.json.error.code).toBe('plus_required');
+  });
+
+  it('is counted apart from ordinary lists, both ways', async () => {
+    const { env, friend } = await world();
+    const list = await call(env, 'POST', '/v1/shared-lists', { token: friend, body: { name: 'Films' } });
+    expect(list.status).toBe(200);
+    const together = await call(env, 'POST', '/v1/shared-lists', { token: friend, body: { kind: 'together', item: SHOW } });
+    expect(together.status).toBe(200);
+  });
+
+  it('Plus starts as many as it likes', async () => {
+    const { env, owner } = await world();
+    for (let i = 0; i < 3; i++) await startTogether(env, owner);
+  });
+
+  it('deleting one somebody joined does not give the free one back', async () => {
+    const { env, friend, stranger } = await world();
+    const { id, invite_code } = await startTogether(env, friend);
+    await call(env, 'POST', '/v1/shared-lists/join', { token: stranger, body: { invite_code } });
+    await call(env, 'DELETE', `/v1/shared-lists/${id}`, { token: friend });
+    const again = await call(env, 'POST', '/v1/shared-lists', { token: friend, body: { kind: 'together', item: SHOW } });
+    expect(again.json.error.code).toBe('plus_required');
   });
 
   it('creates the list, the owner and its one show in one go, named after the show', async () => {
@@ -189,5 +213,51 @@ describe('a together ending', () => {
     await put(env, friend, id, itemId, { season: 1, episode: 2 });
     raw.prepare("DELETE FROM profiles WHERE id = 'p_friend'").run();
     expect(raw.prepare('SELECT COUNT(*) AS n FROM shared_list_positions').get()).toEqual({ n: 0 });
+  });
+});
+
+describe('mark it for both of us (2.4.0)', () => {
+  const mark = (env: Env, token: string, id: string, on: unknown) =>
+    call(env, 'PUT', `/v1/shared-lists/${id}/mark-together`, { token, body: { on } });
+
+  it('is only "all" once every member, and at least two, have it on', async () => {
+    const { env, t, owner, friend } = await world();
+    const { id, invite_code } = await startTogether(env, owner);
+    // Alone: on for me, never "all" — there is nobody to follow.
+    expect((await mark(env, owner, id, true)).json).toEqual({ ok: true, mark_together: { me: true, all: false } });
+    await call(env, 'POST', '/v1/shared-lists/join', { token: friend, body: { invite_code } });
+    expect((await mark(env, friend, id, true)).json.mark_together).toEqual({ me: true, all: true });
+    // A third member arrives off, so nobody is marked for until they agree.
+    const a = await t('a');
+    await call(env, 'POST', '/v1/shared-lists/join', { token: a, body: { invite_code } });
+    expect((await call(env, 'GET', `/v1/shared-lists/${id}`, { token: owner })).json.mark_together).toEqual({ me: true, all: false });
+    expect((await mark(env, a, id, true)).json.mark_together.all).toBe(true);
+    expect((await mark(env, friend, id, false)).json.mark_together).toEqual({ me: false, all: false });
+  });
+
+  it('is in the detail for members of a together only', async () => {
+    const { env, owner, stranger } = await world();
+    const { id } = await startTogether(env, owner);
+    expect((await call(env, 'GET', `/v1/shared-lists/${id}`, { token: owner })).json.mark_together).toEqual({ me: false, all: false });
+    expect((await call(env, 'GET', `/v1/shared-lists/${id}`, { token: stranger })).json).not.toHaveProperty('mark_together');
+    const plain = await call(env, 'POST', '/v1/shared-lists', { token: owner, body: { name: 'Films' } });
+    expect((await call(env, 'GET', `/v1/shared-lists/${plain.json.id}`, { token: owner })).json).not.toHaveProperty('mark_together');
+  });
+
+  it('refuses an ordinary list, a non-member, a missing list and a bad body', async () => {
+    const { env, owner, stranger } = await world();
+    const { id } = await startTogether(env, owner);
+    const plain = await call(env, 'POST', '/v1/shared-lists', { token: owner, body: { name: 'Films' } });
+    expect((await mark(env, owner, plain.json.id, true)).status).toBe(403);
+    expect((await mark(env, stranger, id, true)).status).toBe(404);
+    expect((await mark(env, owner, 'sl_nope', true)).status).toBe(404);
+    expect((await mark(env, owner, id, 'yes')).status).toBe(400);
+  });
+
+  it('needs no Plus', async () => {
+    const { env, raw, owner } = await world();
+    const { id } = await startTogether(env, owner);
+    raw.prepare("UPDATE profiles SET is_plus = 0 WHERE id = 'p_owner'").run();
+    expect((await mark(env, owner, id, true)).status).toBe(200);
   });
 });

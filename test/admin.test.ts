@@ -210,6 +210,14 @@ describe('the admin dashboard', () => {
     expect((await call(env, 'GET', '/v1/admin/users')).status).toBe(401);
   });
 
+  it('lists where each library was imported from (2.4.0)', async () => {
+    const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
+    insertProfile(raw, 'p1', 'someone');
+    raw.prepare("UPDATE profiles SET import_source = 'tvtime' WHERE id = 'p1'").run();
+    const res = await call(env, 'GET', '/v1/admin/users', { headers: { Cookie: cookie } });
+    expect(res.json.items[0].import_source).toBe('tvtime');
+  });
+
   it("tags Google's test robots and leaves them out of the counts", async () => {
     const cookie = (await login()).headers.get('set-cookie')!.split(';')[0]!;
     const now = new Date().toISOString();
