@@ -1103,7 +1103,8 @@ let allPeople = [];
 let openedLabel = 'Opened today';
 const SOURCE_NAMES = {
   tvtime: 'TV Time', simkl: 'Simkl', trakt: 'Trakt', letterboxd: 'Letterboxd', imdb: 'IMDb',
-  serializd: 'Serializd', extension_csv: 'extension CSV', fresh: 'nothing (fresh)',
+  serializd: 'Serializd', extension_csv: 'extension CSV',
+  sofatime: 'Sofa Time', bingers: 'Bingers', fresh: 'nothing (fresh)',
 };
 const FILTERS = [
   { id: 'opened', label: () => openedLabel, test: (u) => openedToday(u) },

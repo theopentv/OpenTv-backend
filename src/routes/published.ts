@@ -180,6 +180,8 @@ const IMPORT_SOURCES = new Set([
   'imdb',
   'serializd',
   'extension_csv',
+  'sofatime',
+  'bingers',
   'fresh',
 ]);
 
