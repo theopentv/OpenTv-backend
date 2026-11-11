@@ -55,6 +55,47 @@ describe('starting a list', () => {
     expect(second.json.error.code).toBe('plus_required');
   });
 
+  it('Plus starts as many as it likes', async () => {
+    const { env, raw, owner } = await world();
+    raw.prepare("UPDATE profiles SET is_plus = 1 WHERE id = 'p_owner'").run();
+    for (const name of ['One', 'Two', 'Three']) {
+      expect((await call(env, 'POST', '/v1/shared-lists', { token: owner, body: { name } })).status).toBe(200);
+    }
+  });
+
+  /*
+   * DELETING DOES NOT REFUND A LIST SOMEBODY JOINED (2.4.0). Otherwise the
+   * free one is a free subscription: start, share, delete, start again.
+   */
+  it('deleting a list nobody joined gives the free one back', async () => {
+    const { env, owner } = await world();
+    const { id } = await makeList(env, owner);
+    await call(env, 'DELETE', `/v1/shared-lists/${id}`, { token: owner });
+    expect((await call(env, 'POST', '/v1/shared-lists', { token: owner, body: { name: 'Again' } })).status).toBe(200);
+  });
+
+  it('deleting a list somebody joined does not', async () => {
+    const { env, owner, friend } = await world();
+    const { id, invite_code } = await makeList(env, owner);
+    await call(env, 'POST', '/v1/shared-lists/join', { token: friend, body: { invite_code } });
+    await call(env, 'DELETE', `/v1/shared-lists/${id}`, { token: owner });
+    const again = await call(env, 'POST', '/v1/shared-lists', { token: owner, body: { name: 'Again' } });
+    expect(again.status).toBe(403);
+    expect(again.json.error.code).toBe('plus_required');
+  });
+
+  it('a friend joining and leaving again still counts it as shared', async () => {
+    const { env, raw, owner, friend } = await world();
+    const { id, invite_code } = await makeList(env, owner);
+    await call(env, 'POST', '/v1/shared-lists/join', { token: friend, body: { invite_code } });
+    await call(env, 'DELETE', `/v1/shared-lists/${id}`, { token: friend });
+    expect(raw.prepare('SELECT was_shared FROM shared_lists WHERE id = ?').get(id)).toEqual({ was_shared: 1 });
+    await call(env, 'DELETE', `/v1/shared-lists/${id}`, { token: owner });
+    expect((await call(env, 'POST', '/v1/shared-lists', { token: owner, body: { name: 'Again' } })).json.error.code).toBe(
+      'plus_required',
+    );
+  });
+
   it('counts only lists you STARTED, never ones you were invited to', async () => {
     const { env, raw, owner, friend } = await world();
     const { invite_code } = await makeList(env, owner);

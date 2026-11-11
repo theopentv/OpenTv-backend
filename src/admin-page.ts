@@ -1101,6 +1101,11 @@ let allPeople = [];
  * answers; a person shows when they match ALL the filters that are on.
  */
 let openedLabel = 'Opened today';
+const SOURCE_NAMES = {
+  tvtime: 'TV Time', simkl: 'Simkl', trakt: 'Trakt', letterboxd: 'Letterboxd', imdb: 'IMDb',
+  serializd: 'Serializd', extension_csv: 'extension CSV',
+  sofatime: 'Sofa Time', bingers: 'Bingers', fresh: 'nothing (fresh)',
+};
 const FILTERS = [
   { id: 'opened', label: () => openedLabel, test: (u) => openedToday(u) },
   { id: 'did', label: () => 'Did something', test: (u) => didToday(u) || !!u.library_on_day },
@@ -1121,6 +1126,9 @@ const FILTERS = [
   { id: 'google', label: () => 'Google', test: (u) => String(u.providers || '').includes('google') },
   { id: 'email', label: () => 'Email', test: (u) => !!u.email },
   { id: 'robot', label: () => 'Test robots', test: (u) => !!u.robot },
+  // WHERE THEY CAME FROM (2.4.0): one chip per import source, so its count is
+  // the per-source total. Set by phones on 2.4.0+; older ones send nothing.
+  ...Object.entries(SOURCE_NAMES).map(([id, name]) => ({ id: 'src_' + id, label: () => 'From ' + name, test: (u) => u.import_source === id })),
 ];
 const activeFilters = new Set();
 
@@ -1248,6 +1256,7 @@ function drawPeople() {
           // Joined nothing: backup and sync only, no public profile (0049).
           : !u.joined_at ? ' <span class="tag">account only</span>'
           : placeholder ? ' <span class="tag warn">no username yet</span>' : '') +
+        (u.import_source ? ' <span class="tag">from ' + esc(SOURCE_NAMES[u.import_source] || u.import_source) + '</span>' : '') +
         (u.display_name ? '<div class="name">' + esc(u.display_name) + '</div>' : '');
       const how = esc((u.providers || '').split(',').join(', ')) +
         (u.unconfirmed ? ' <span class="tag warn">unconfirmed</span>' : '');

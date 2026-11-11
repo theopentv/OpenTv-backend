@@ -905,6 +905,8 @@ admin.get('/admin/users', async (c) => {
             p.last_seen_at,
             p.app_version,
             p.publish_state,
+            -- Which app their library came from (0073): one word, sent with a publish.
+            p.import_source,
             -- The address only where the person typed one into this app. A
             -- provider's copy is Apple's or Google's to show, not ours to
             -- collect a list of.

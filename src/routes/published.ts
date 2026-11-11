@@ -171,6 +171,20 @@ type TitleInput = {
   fav_rank?: unknown;
 };
 
+/** Where a library was imported from — the only values `import_source` stores. */
+const IMPORT_SOURCES = new Set([
+  'tvtime',
+  'simkl',
+  'trakt',
+  'letterboxd',
+  'imdb',
+  'serializd',
+  'extension_csv',
+  'sofatime',
+  'bingers',
+  'fresh',
+]);
+
 // ── PUT /v1/me/published — replace my summary ───────────────────────────────
 
 published.put('/me/published', requireAuth, async (c) => {
@@ -356,6 +370,17 @@ published.put('/me/published', requireAuth, async (c) => {
   // PUBLISHING IS A MEMBER'S ACT: only a phone that joined publishes, so this
   // marks the server's copy of "joined" for every app version (0049).
   await db.prepare('UPDATE profiles SET joined_at = ? WHERE id = ? AND joined_at IS NULL').bind(nowIso, me).run();
+  /*
+   * WHICH APP THEY CAME FROM (2.4.0, 0073) — one word from a closed set, so
+   * the dashboard can say how many arrived from TV Time and how many from
+   * Simkl. Which door, never what came through it. Anything outside the set
+   * is dropped rather than refused: a newer phone naming a source this server
+   * does not know yet must not fail the shelf it came with. Absent (every
+   * older app) leaves the stored one alone.
+   */
+  if (typeof b.import_source === 'string' && IMPORT_SOURCES.has(b.import_source)) {
+    await db.prepare('UPDATE profiles SET import_source = ? WHERE id = ?').bind(b.import_source, me).run();
+  }
   await db
     .prepare(
       `INSERT INTO profile_stats

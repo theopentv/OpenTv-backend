@@ -41,6 +41,19 @@ beforeEach(async () => {
 });
 
 describe('PUT /v1/me/published', () => {
+  it('stores a known import_source, ignores an unknown one, and keeps it when absent', async () => {
+    const send = (extra: Record<string, unknown>) =>
+      call(env, 'PUT', '/v1/me/published', { token, body: { kind: 'show', titles: [title(1)], ...extra } });
+    const source = () => raw.prepare("SELECT import_source FROM profiles WHERE id = 'p1'").get();
+    expect((await send({ import_source: 'simkl' })).status).toBe(200);
+    expect(source()).toEqual({ import_source: 'simkl' });
+    // Not an error: a newer phone naming a source this server does not know.
+    expect((await send({ import_source: 'netflix' })).status).toBe(200);
+    expect((await send({ import_source: 42 })).status).toBe(200);
+    expect((await send({})).status).toBe(200);
+    expect(source()).toEqual({ import_source: 'simkl' });
+  });
+
   it('stores a shelf and its stats', async () => {
     const res = await call(env, 'PUT', '/v1/me/published', {
       token,
